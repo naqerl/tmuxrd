@@ -72,8 +72,7 @@ func classifyTail(tail string) State {
 	}
 	// working
 	workPats := []string{"working", "thinking", "…", "...", "running", "executing",
-		"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/",
-		"──", "Working"}
+			"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/"}
 	for _, p := range workPats {
 		if strings.Contains(joined, p) {
 			return Working
@@ -154,7 +153,14 @@ func Detect() []Result {
 			continue
 		}
 		screen := tmux.Capture(p.ID)
-		out = append(out, Result{PaneID: p.ID, Agent: agent, State: classifyTail(screen), Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName})
+		st := classifyTail(screen)
+		if fc := foregroundCommand(p.PID); fc != "" {
+			lc := strings.ToLower(fc)
+			if lc == "bash" || lc == "zsh" || lc == "fish" || lc == "sh" || lc == "dash" {
+				st = Idle
+			}
+		}
+		out = append(out, Result{PaneID: p.ID, Agent: agent, State: st, Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName})
 	}
 	return out
 }
