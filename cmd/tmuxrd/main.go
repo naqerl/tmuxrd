@@ -142,9 +142,11 @@ var (
 	}
 )
 
-// workedLabel renders how long the agent has been working, e.g. "0s", "45s",
-// "1m", "1m30s". It is empty for an agent that has never worked, so the column
-// costs nothing until it is useful.
+// workedLabel renders how long the agent has been working on this run, e.g.
+// "0s", "45s", "1m", "1m30s". The timer is reset each time the agent starts
+// working again, so it reads the current (or last) working period, not a total.
+// It is empty for an agent that has never worked, so the column costs nothing
+// until it is useful.
 func workedLabel(r detect.Result) string {
 	if r.Worked == 0 && r.State != detect.Working {
 		return ""

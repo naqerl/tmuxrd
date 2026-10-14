@@ -490,6 +490,33 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		}
 		return fmt.Errorf("timer for %s never advanced past %q", agent, tok)
 	})
+	s.Step(`^the timer for agent "([^"]*)" should reset within (\d+)ms$`, func(ctx context.Context, agent string, ms int) error {
+		// It must drop below whatever it had reached before, i.e. the new working
+		// period starts over instead of resuming.
+		tok, err := cur.env.TimerFor(agent)
+		if err != nil {
+			return err
+		}
+		before, err := tmuxenv.ParseTimer(tok)
+		if err != nil {
+			return err
+		}
+		if before == 0 {
+			return fmt.Errorf("timer for %s is already 0s, nothing to reset from", agent)
+		}
+		deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
+		for time.Now().Before(deadline) {
+			tok, err = cur.env.TimerFor(agent)
+			if err != nil {
+				return err
+			}
+			if got, err := tmuxenv.ParseTimer(tok); err == nil && got < before {
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return fmt.Errorf("timer for %s did not reset below %v (still %q)", agent, before, tok)
+	})
 	s.Step(`^the timer for agent "([^"]*)" should stop within (\d+)ms$`, func(ctx context.Context, agent string, ms int) error {
 		deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
 		var last string

@@ -27,11 +27,12 @@ type stateMsg struct {
 	Results []detect.Result `json:"results"`
 }
 
-// workTime is the daemon's accumulator for one pane: how long it has worked in
-// total, plus the start of the current working period (zero when not working).
+// workTime times one pane's current working period: since is when the period
+// started (zero when the pane is not working) and last is the duration the
+// previous period reached, kept so the sidebar can show it while stopped.
 type workTime struct {
-	accumulated time.Duration
-	since       time.Time
+	last  time.Duration
+	since time.Time
 }
 
 var socketPath string
@@ -76,9 +77,9 @@ func cmdDaemon() {
 		state     []detect.Result
 		workTimes = map[string]*workTime{}
 	)
-	// applyWorkTime accumulates how long each pane has been working. It pauses
-	// when the agent stops working and resumes when it starts again, so the
-	// sidebar can show a timer that stops and continues with the agent.
+	// applyWorkTime times the current working period for each pane. Starting to
+	// work (re)sets it, so an agent that goes idle and then works again starts
+	// from zero rather than resuming; stopping freezes the value it reached.
 	applyWorkTime := func(res []detect.Result, now time.Time) {
 		seen := make(map[string]bool, len(res))
 		for i := range res {
@@ -91,16 +92,18 @@ func cmdDaemon() {
 			}
 			if r.State == detect.Working {
 				if wt.since.IsZero() {
+					// A new working period: start the timer over.
 					wt.since = now
+					wt.last = 0
 				}
-				r.Worked = wt.accumulated + now.Sub(wt.since)
+				r.Worked = now.Sub(wt.since)
 				continue
 			}
 			if !wt.since.IsZero() {
-				wt.accumulated += now.Sub(wt.since)
+				wt.last = now.Sub(wt.since)
 				wt.since = time.Time{}
 			}
-			r.Worked = wt.accumulated
+			r.Worked = wt.last
 		}
 		for id := range workTimes {
 			if !seen[id] {

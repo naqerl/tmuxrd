@@ -26,9 +26,9 @@ type Result struct {
 	Session    string
 	Window     string
 	WindowName string
-	// Worked is how long this pane has been in the working state, accumulated
-	// across working periods (it pauses when the agent stops working and resumes
-	// when it starts again). The daemon owns it; Detect leaves it zero.
+	// Worked is how long the current working period has run: it is reset each
+	// time the agent starts working, and frozen when it stops. The daemon owns
+	// it; Detect leaves it zero.
 	Worked time.Duration
 }
 
