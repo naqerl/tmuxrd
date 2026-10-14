@@ -170,8 +170,6 @@ func (m model) View() string {
 				pw := len([]rune(pth))
 				if lw+1+pw <= m.width {
 					line = left + strings.Repeat(" ", m.width-lw-pw) + pth
-				} else if len([]rune(line)) > m.width {
-					line = string([]rune(line)[:m.width-3]) + "..."
 				}
 			}
 			s += line + "\n"
