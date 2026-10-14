@@ -41,11 +41,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg, refreshMsg:
 		m.results = detect.Detect()
 		if cp := tmux.CurrentPane(); cp != "" {
+			found := false
 			for i, r := range m.results {
 				if r.PaneID == cp {
 					m.cursor = i
+					found = true
 					break
 				}
+			}
+			if !found {
+				m.cursor = -1
 			}
 		}
 		if m.cursor >= len(m.results) && len(m.results) > 0 {
@@ -131,7 +136,7 @@ func (m model) View() string {
 			}
 			circle := statusCircle(r.State)
 			mark := " "
-			if gi == m.cursor {
+			if m.cursor >= 0 && gi == m.cursor {
 				mark = ">"
 			}
 			line := fmt.Sprintf("%s  %s  %-8s %s", mark, circle, r.Agent, pth)
