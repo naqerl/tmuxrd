@@ -160,9 +160,16 @@ func (m model) View() string {
 			if r.WindowName != "" && r.WindowName != r.Agent {
 				label = r.WindowName + " (" + r.Agent + ")"
 			}
-			line := fmt.Sprintf("%s  %s  %-12s %s", mark, circle, label, pth)
-			if m.width > 0 && len([]rune(line)) > m.width {
-				line = string([]rune(line)[:m.width-3]) + "..."
+			left := fmt.Sprintf("%s  %s  %-12s", mark, circle, label)
+			line := left + " " + pth
+			if m.width > 0 {
+				lw := len([]rune(left))
+				pw := len([]rune(pth))
+				if lw+1+pw <= m.width {
+					line = left + strings.Repeat(" ", m.width-lw-pw) + pth
+				} else if len([]rune(line)) > m.width {
+					line = string([]rune(line)[:m.width-3]) + "..."
+				}
 			}
 			s += line + "\n"
 		}
