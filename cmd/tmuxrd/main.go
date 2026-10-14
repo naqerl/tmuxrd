@@ -27,13 +27,11 @@ const (
 )
 
 type model struct {
-	srv           tmux.Server
-	results       []detect.Result
-	cursor        int
-	width         int
-	spin          spinner.Model
-	focusPane     string // last pane we tried to sync the cursor to
-	focusResolved bool   // whether focusPane was found in the agent list
+	srv     tmux.Server
+	results []detect.Result
+	cursor  int
+	width   int
+	spin    spinner.Model
 }
 
 // newModel builds a client model with the working spinner ready to animate.
@@ -42,55 +40,35 @@ func newModel(srv tmux.Server) model {
 	return model{srv: srv, spin: s}
 }
 
-// indexOfPane returns the result index for a pane id, or -1.
-func (m model) indexOfPane(paneID string) int {
-	for i, r := range m.results {
-		if r.PaneID == paneID {
-			return i
-		}
-	}
-	return -1
-}
-
-// clampCursor keeps the cursor on a real row whenever there are agents, so the
-// ">" marker never simply vanishes; -1 is only possible with no results.
-func (m *model) clampCursor() {
-	if len(m.results) == 0 {
-		m.cursor = -1
+// syncMarker marks the agent whose window is currently in view, and clears the
+// marker entirely when that window has no agent (a shell window, htop).
+//
+// Keying off the *window* rather than the pane is what makes every sidebar agree
+// without shared state: focusing an agent's sidebar still shows that agent
+// marked, while a non-agent window shows no marker at all.
+func (m *model) syncMarker() {
+	_, sess, win := m.srv.CurrentTarget()
+	m.cursor = -1
+	if sess == "" {
 		return
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor >= len(m.results) {
-		m.cursor = len(m.results) - 1
+	for i, r := range m.results {
+		if r.Session == sess && r.Window == win {
+			m.cursor = i
+			return
+		}
 	}
 }
 
-// syncFocus moves the cursor onto the focused pane's row, but only when the
-// focus actually moved to an agent pane.
-//
-// Two bugs came from doing this unconditionally on every state push: the daemon
-// pushes every 500ms, so a manual j/k selection was wiped immediately, and
-// pointing at the sidebar pane itself (which is what happens as soon as you
-// click the sidebar to use it, and it is not an agent) set the cursor to -1 and
-// hid the marker.
-//
-// focusResolved keeps the first sync honest: on startup the focused pane is
-// known before the agent list is, so without it focusPane would be recorded
-// once, never resolved to a row, and the marker would sit on row 0.
-func (m *model) syncFocus() {
-	cp := m.srv.CurrentPane()
-	if cp != "" && !(cp == m.focusPane && m.focusResolved) {
-		m.focusPane = cp
-		if i := m.indexOfPane(cp); i >= 0 {
-			m.cursor = i
-			m.focusResolved = true
-		} else {
-			m.focusResolved = false
-		}
+// goTo selects row i and switches the view to that agent's window and session,
+// leaving the keyboard on a sidebar so navigation can continue. Enter
+// (FocusPane) is what moves the keyboard into the agent pane itself.
+func (m *model) goTo(i int) {
+	if i < 0 || i >= len(m.results) {
+		return
 	}
-	m.clampCursor()
+	m.cursor = i
+	m.srv.GoToAgent(m.results[i].PaneID)
 }
 
 func waitForSignal() tea.Msg {
@@ -112,10 +90,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stateUIMsg:
 		m.results = msg.Results
-		m.syncFocus()
+		m.syncMarker()
 	case tickMsg:
 		m.results = detect.Detect(m.srv)
-		m.syncFocus()
+		m.syncMarker()
 		return m, tea.Batch(tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
 	case spinner.TickMsg:
 		// Advance only the spinner animation; never re-run detection here.
@@ -129,11 +107,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "j", "down", "ctrl+n":
-			m.cursor++
-			m.clampCursor()
+			m.goTo(m.cursor + 1)
 		case "k", "up", "ctrl+p":
-			m.cursor--
-			m.clampCursor()
+			m.goTo(m.cursor - 1)
 		case "enter":
 			if m.cursor >= 0 && m.cursor < len(m.results) {
 				m.srv.FocusPane(m.results[m.cursor].PaneID)

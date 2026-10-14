@@ -459,6 +459,21 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		}
 		return nil
 	})
+	s.Step(`^session "([^"]*)" has an extra non-agent window$`, func(ctx context.Context, sess string) error {
+		return cur.env.NewWindow(sess, "plain", "")
+	})
+	s.Step(`^the sidebar should show no selection marker$`, func(ctx context.Context) error {
+		return eventually(2*time.Second, func() error {
+			rows, err := cur.env.SidebarMarked()
+			if err != nil {
+				return err
+			}
+			if len(rows) != 0 {
+				return fmt.Errorf("expected no marker, got %v", rows)
+			}
+			return nil
+		})
+	})
 	s.Step(`^I focus the sidebar pane$`, func(ctx context.Context) error {
 		// Focusing the sidebar is what a user does to press j/k; the focused pane
 		// is then not an agent, which used to make the marker vanish.
@@ -498,6 +513,50 @@ func InitializeScenario(s *godog.ScenarioContext) {
 	s.Step(`^I wait (\d+)ms$`, func(ctx context.Context, ms int) error {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 		return nil
+	})
+	s.Step(`^window "([^"]*)" should have its agent pane focused$`, func(ctx context.Context, win string) error {
+		// Enter must move the keyboard into the agent pane (not leave it on the
+		// sidebar), so the active pane of that window must not be a sidebar.
+		return eventually(2*time.Second, func() error {
+			sess := cur.env.ActiveSession()
+			if sess == "" {
+				sess = "s1"
+			}
+			out, err := cur.env.Server.Run("list-panes", "-t", sess+":"+win, "-F",
+				"#{pane_id}\t#{pane_active}\t#{@tmuxrd_sidebar}")
+			if err != nil {
+				return err
+			}
+			for _, line := range strings.Split(out, "\n") {
+				f := strings.Split(line, "\t")
+				if len(f) == 3 && f[1] == "1" {
+					if strings.TrimSpace(f[2]) == "1" {
+						return fmt.Errorf("active pane of %s:%s is still the sidebar (%s)", sess, win, f[0])
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("no active pane in %s:%s", sess, win)
+		})
+	})
+	s.Step(`^window "([^"]*)" of session "([^"]*)" should be named "([^"]*)"$`, func(ctx context.Context, win, sess, want string) error {
+		return eventually(2*time.Second, func() error {
+			out, err := cur.env.Server.Run("list-windows", "-t", sess, "-F",
+				"#{window_index} #{window_name}")
+			if err != nil {
+				return err
+			}
+			for _, line := range strings.Split(out, "\n") {
+				f := strings.SplitN(strings.TrimSpace(line), " ", 2)
+				if len(f) == 2 && f[0] == win {
+					if f[1] != want {
+						return fmt.Errorf("window %s of session %s is named %q, want %q", win, sess, f[1], want)
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("no window %s in session %s", win, sess)
+		})
 	})
 	s.Step(`^window "([^"]*)" should be the active window of session "([^"]*)"$`, func(ctx context.Context, win, sess string) error {
 		return eventually(2*time.Second, func() error {

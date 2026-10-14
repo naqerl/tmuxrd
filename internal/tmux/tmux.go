@@ -138,6 +138,45 @@ func (s Server) CurrentPane() string {
 	return strings.TrimSpace(out)
 }
 
+// CurrentTarget returns the pane, session and window currently in view. From
+// inside a pane tmux resolves the session's *current* window, which is what the
+// client is displaying, so this is the single source of truth for "which window
+// am I looking at" — shared by every sidebar without any shared state.
+func (s Server) CurrentTarget() (paneID, session, window string) {
+	out, _ := s.Run("display-message", "-p", "#{pane_id}\t#{session_name}\t#{window_index}")
+	f := strings.Split(strings.TrimSpace(out), "\t")
+	if len(f) < 3 {
+		return "", "", ""
+	}
+	return f[0], f[1], f[2]
+}
+
+// sidebarPaneInWindow returns the sidebar pane of the window holding paneID.
+func (s Server) sidebarPaneInWindow(paneID string) string {
+	out, _ := s.Run("list-panes", "-t", paneID, "-F", "#{pane_id}\t#{@tmuxrd_sidebar}")
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) == 2 && strings.TrimSpace(f[1]) == "1" {
+			return f[0]
+		}
+	}
+	return ""
+}
+
+// GoToAgent switches the view to the pane's window and session (switch-client
+// handles the cross-session case; select-window moves the view when no client
+// is attached) but leaves the keyboard on that window's sidebar pane, so the
+// sidebar can keep navigating after the view has moved.
+func (s Server) GoToAgent(paneID string) {
+	s.Run("switch-client", "-t", paneID)
+	s.Run("select-window", "-t", paneID)
+	if sb := s.sidebarPaneInWindow(paneID); sb != "" {
+		s.Run("select-pane", "-t", sb)
+		return
+	}
+	s.Run("select-pane", "-t", paneID)
+}
+
 // SelectPane focuses a pane: switch the client to its session, select its
 // window, then make it the active pane.
 //

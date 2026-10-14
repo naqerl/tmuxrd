@@ -34,25 +34,50 @@ Feature: Sidebar reflects window focus quickly and stays consistent
     When I focus the sidebar pane
     Then the sidebar should still show a selection marker
 
-  Scenario: The marker does not snap back to the focused window
-    # The daemon pushes state every 500ms. Re-syncing the cursor on every push
-    # wiped a manual selection, so j/k appeared to do nothing.
+  Scenario: Navigating switches the view to the next agent
+    # j/k must move the *view* (window/session), not just the marker; Enter is
+    # what then moves the keyboard into the agent pane.
+    Given the sidebar is showing agent rows
+    When I select window "0"
+    Then the sidebar should select window "0" within 250ms
+    When I press the "j" key in the sidebar
+    Then window "1" should be the active window of session "s1"
+    And the sidebar should select window "1" within 250ms
+
+  Scenario: Navigating back switches the view back
     Given the sidebar is showing agent rows
     When I select window "2"
     Then the sidebar should select window "2" within 250ms
     When I press the "k" key in the sidebar
-    Then the sidebar should select window "1" within 250ms
-    When I wait 1600ms
-    Then the sidebar should select window "1" within 250ms
+    Then window "1" should be the active window of session "s1"
+    And the sidebar should select window "1" within 250ms
 
   Scenario: Enter focuses the pointed agent's window
     Given the sidebar is showing agent rows
     When I select window "0"
     Then the sidebar should select window "0" within 250ms
     When I press the "j" key in the sidebar
-    Then the sidebar should select window "1" within 250ms
-    When I press the "Enter" key in the sidebar
     Then window "1" should be the active window of session "s1"
+    When I press the "Enter" key in the sidebar
+    Then window "1" should have its agent pane focused
+
+  Scenario: Focusing the sidebar keeps the window named after its agent
+    # tmux renames a window from its active pane, so without pinning the name the
+    # window becomes "tmuxrd" the moment the sidebar pane is focused.
+    Given the sidebar is showing agent rows
+    When I focus the sidebar pane
+    And I wait 1200ms
+    Then window "0" of session "s1" should be named "pi"
+
+  Scenario: A non-agent window shows no marker
+    # The marker must say "the agent you are looking at"; a shell window has no
+    # agent in view, so nothing is marked.
+    Given the sidebar is showing agent rows
+    And session "s1" has an extra non-agent window
+    When I select window "3"
+    Then the sidebar should show no selection marker
+    When I select window "1"
+    Then the sidebar should select window "1" within 250ms
 
   Scenario: Sidebar stays consistent after rapid window switching
     When I select window "0"

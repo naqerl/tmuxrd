@@ -11,6 +11,7 @@ else
     if ! tmuxi list-panes -t "$w" -F '#{@tmuxrd_sidebar}' | grep -q '^1$'; then
       newpane=$(tmuxi split-window -hb -t "$w" -d -P -F '#{pane_id}' -l 32 "$BIN client")
       tmuxi set-option -p -t "$newpane" @tmuxrd_sidebar 1
+      pin_window_name "$w"
     fi
   done
   tmuxi set-option -g @tmuxrd_enabled 1
