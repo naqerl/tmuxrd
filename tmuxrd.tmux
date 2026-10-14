@@ -23,6 +23,4 @@ set-hook -g after-select-pane 'run-shell -b "#{@tmuxrd_root}/bin/tmuxrd notify >
 set-hook -g after-select-window 'run-shell -b "#{@tmuxrd_root}/bin/tmuxrd notify >/dev/null 2>&1 || true"'
 set-hook -g after-split-window 'run-shell -b "#{@tmuxrd_root}/bin/tmuxrd notify >/dev/null 2>&1 || true"'
 set-hook -g window-layout-changed 'run-shell -b "#{@tmuxrd_root}/bin/tmuxrd notify >/dev/null 2>&1 || true"'
-set-option -g status-right "#(#{@tmuxrd_root}/bin/tmuxrd summary) | %H:%M"
-set-option -g status-interval 1
 display-message "tmuxrd loaded"

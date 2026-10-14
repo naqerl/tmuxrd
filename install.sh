@@ -212,6 +212,18 @@ restart_daemon() {
 
   stop_daemon
 
+  # Older tmuxrd versions put a summary in status-right (and forced
+  # status-interval 1). Take that back out — but only if it is ours, never the
+  # user's own status line.
+  sr="$(tmuxi show-options -g status-right 2>/dev/null || true)"
+  case "$sr" in
+    *"tmuxrd summary"*)
+      tmuxi set-option -gu status-right
+      tmuxi set-option -gu status-interval
+      log "removed tmuxrd's old status-line edit"
+      ;;
+  esac
+
   tmuxi set-option -gq @tmuxrd_root "$ROOT"
   tmuxi source-file "$ROOT/tmuxrd.tmux" >/dev/null 2>&1 || true
   tmuxi run-shell -b "$ROOT/bin/tmuxrd daemon >/dev/null 2>&1"

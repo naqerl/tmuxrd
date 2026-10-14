@@ -222,13 +222,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 var (
 	titleStyle = lipgloss.NewStyle().Bold(true)
 	lineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	selStyle   = lipgloss.NewStyle().Reverse(true)
 	stateStyle = map[detect.State]lipgloss.Style{
 		detect.Idle:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
 		detect.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
 		detect.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
 		detect.Unknown: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 	}
+)
+
+// The mobile strip is its own visual surface: a full-width bar with a
+// background of its own, and one padded "tab" per agent. A tab's accent
+// background is the mobile selection marker — the desktop's ">" is too small
+// to pick out on a phone.
+var (
+	stripBarStyle = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("250"))
+	tabStyle      = lipgloss.NewStyle().Background(lipgloss.Color("239")).Foreground(lipgloss.Color("253"))
+	tabSelStyle   = lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("231")).Bold(true)
 )
 
 // workedLabel renders how long the agent has been working on this run, e.g.
@@ -274,6 +283,34 @@ func statusCircle(s detect.State, spinView string) string {
 		return st.Render("○")
 	default:
 		return st.Render("○")
+	}
+}
+
+// stateGlyph is the raw glyph for a state, with no colour of its own, so a tab
+// can colour it against the tab's background.
+func stateGlyph(s detect.State, spinView string) string {
+	switch s {
+	case detect.Working:
+		return strings.TrimRight(spinView, " ")
+	case detect.Blocked:
+		return "?"
+	default:
+		return "○"
+	}
+}
+
+// stateColor is the glyph colour inside a tab, matching the desktop sidebar's
+// colours for the same states.
+func stateColor(s detect.State) lipgloss.TerminalColor {
+	switch s {
+	case detect.Working:
+		return lipgloss.Color("3")
+	case detect.Blocked:
+		return lipgloss.Color("1")
+	case detect.Idle:
+		return lipgloss.Color("2")
+	default:
+		return lipgloss.Color("8")
 	}
 }
 
@@ -375,65 +412,91 @@ func (m model) sideView() string {
 	return s
 }
 
-// stripView renders the mobile strip: a full-width row of agent chips, and a
+// stripBarPad pads a strip line to the pane width with the bar's background,
+// so every row reads as one continuous bar rather than floating text.
+func stripBarPad(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if ansi.StringWidth(s) > width {
+		s = ansi.Truncate(s, width, "…")
+	}
+	if w := ansi.StringWidth(s); w < width {
+		s += stripBarStyle.Render(strings.Repeat(" ", width-w))
+	}
+	return s
+}
+
+// renderTab draws one agent as a tab: padded on both sides, with the selected
+// one on the accent background. The glyph keeps its state colour, which is why
+// the tab is assembled from separately rendered segments — nesting a styled
+// glyph inside a styled tab would let the glyph's reset cancel the tab's
+// background.
+func (m model) renderTab(i int) string {
+	r := m.results[i]
+	tab := tabStyle
+	bg := lipgloss.TerminalColor(lipgloss.Color("239"))
+	if i == m.cursor {
+		tab = tabSelStyle
+		bg = lipgloss.Color("62")
+	}
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State))
+	return tab.Render(" ") + glyph.Render(stateGlyph(r.State, m.spin.View())) + tab.Render(" "+r.Agent+" ")
+}
+
+// tabWidth is the visible width renderTab occupies.
+func (m model) tabWidth(i int) int {
+	r := m.results[i]
+	return 3 + ansi.StringWidth(stateGlyph(r.State, m.spin.View())) + ansi.StringWidth(r.Agent)
+}
+
+// stripView renders the mobile strip: a full-width row of agent tabs, and a
 // second row describing the selected agent. It emits exactly m.height lines
-// (never more — a 2-row pane that scrolls destroys its own content), each
-// padded/truncated to the pane width.
+// (never more — a 2-row pane that scrolls destroys its own content), each a
+// full-width bar.
 func (m model) stripView() string {
-	lines := []string{m.stripChips()}
+	chips, _ := m.stripChipLayout()
+	lines := []string{chips}
 	if m.height >= 2 {
-		lines = append(lines, m.stripDetail())
+		lines = append(lines, stripBarPad(stripBarStyle.Render(m.stripDetail()), m.width))
 	}
 	h := m.height
 	if h <= 0 {
 		h = len(lines)
 	}
 	for len(lines) < h {
-		lines = append(lines, "")
+		lines = append(lines, stripBarPad("", m.width))
 	}
 	if len(lines) > h {
 		lines = lines[:h]
 	}
-	for i := range lines {
-		lines[i] = fitLine(lines[i], m.width)
-	}
 	return strings.Join(lines, "\n")
 }
 
-// chipSpan is the visible column range [start,end) of one agent chip in the
-// strip's first row, so a click can be mapped back to an agent.
+// chipSpan is the visible column range [start,end) of one agent tab in the
+// strip's first row, so a tap can be mapped back to an agent.
 type chipSpan struct {
 	index      int
 	start, end int
 }
 
-// stripChips is the first strip row: one chip per agent, the selected one
-// reversed, scrolled so the selection is always visible even when the agents do
-// not all fit across the pane.
+// stripChips is the first strip row.
 func (m model) stripChips() string {
 	s, _ := m.stripChipLayout()
 	return s
 }
 
-// stripChipLayout builds the chip row and, alongside it, the column span of
-// every visible chip. Both come from one layout pass, so what is drawn and what
-// a click hits can never disagree.
+// stripChipLayout builds the tab row and, alongside it, the column span of
+// every visible tab. Both come from one layout pass, so what is drawn and what a
+// tap hits can never disagree. Tabs sit flush against each other (each carries
+// its own padding), which is what makes the row read as a tab bar.
 func (m model) stripChipLayout() (string, []chipSpan) {
 	if len(m.results) == 0 {
-		return lineStyle.Render("no agents"), nil
-	}
-	sep := "  "
-	plain := make([]string, len(m.results))
-	for i, r := range m.results {
-		mark := " "
-		if i == m.cursor {
-			mark = ">"
-		}
-		plain[i] = fmt.Sprintf("%s%s %s", mark, statusCircle(r.State, m.spin.View()), r.Agent)
+		return stripBarPad(stripBarStyle.Render(" no agents"), m.width), nil
 	}
 
-	// Fit a contiguous run of chips around the selection. Reserve two columns
-	// for the ‹ › markers that signal clipped chips.
+	// Fit a contiguous run of tabs around the selection. Reserve two columns for
+	// the ‹ › markers that signal clipped tabs.
 	budget := m.width
 	if budget > 4 {
 		budget -= 2
@@ -442,17 +505,17 @@ func (m model) stripChipLayout() (string, []chipSpan) {
 	if sel < 0 {
 		sel = 0
 	}
-	if sel >= len(plain) {
-		sel = len(plain) - 1
+	if sel >= len(m.results) {
+		sel = len(m.results) - 1
 	}
-	used := ansi.StringWidth(plain[sel])
+	used := m.tabWidth(sel)
 	lo, hi := sel, sel
-	for budget > 0 && lo > 0 && used+len(sep)+ansi.StringWidth(plain[lo-1]) <= budget {
-		used += len(sep) + ansi.StringWidth(plain[lo-1])
+	for budget > 0 && lo > 0 && used+m.tabWidth(lo-1) <= budget {
+		used += m.tabWidth(lo - 1)
 		lo--
 	}
-	for budget > 0 && hi < len(plain)-1 && used+len(sep)+ansi.StringWidth(plain[hi+1]) <= budget {
-		used += len(sep) + ansi.StringWidth(plain[hi+1])
+	for budget > 0 && hi < len(m.results)-1 && used+m.tabWidth(hi+1) <= budget {
+		used += m.tabWidth(hi + 1)
 		hi++
 	}
 
@@ -460,31 +523,27 @@ func (m model) stripChipLayout() (string, []chipSpan) {
 	spans := make([]chipSpan, 0, hi-lo+1)
 	x := 0
 	if lo > 0 {
-		lead := lineStyle.Render("‹ ")
-		b.WriteString(lead)
-		x += ansi.StringWidth(lead)
+		b.WriteString(stripBarStyle.Render("‹ "))
+		x += 2
 	}
 	for i := lo; i <= hi; i++ {
-		if i > lo {
-			b.WriteString(sep)
-			x += len(sep)
-		}
 		start := x
-		if i == m.cursor {
-			b.WriteString(selStyle.Render(plain[i]))
-		} else {
-			b.WriteString(plain[i])
-		}
-		x += ansi.StringWidth(plain[i])
+		b.WriteString(m.renderTab(i))
+		x += m.tabWidth(i)
 		spans = append(spans, chipSpan{index: i, start: start, end: x})
 	}
-	if hi < len(plain)-1 {
-		b.WriteString(lineStyle.Render(" ›"))
+	if hi < len(m.results)-1 {
+		b.WriteString(stripBarStyle.Render(" ›"))
+		x += 2
 	}
-	return b.String(), spans
+	out := b.String()
+	if m.width > 0 && x < m.width {
+		out += stripBarStyle.Render(strings.Repeat(" ", m.width-x))
+	}
+	return out, spans
 }
 
-// stripChipAt returns the agent whose chip covers column x of the first strip
+// stripChipAt returns the agent whose tab covers column x of the first strip
 // row.
 func (m model) stripChipAt(x int) (int, bool) {
 	_, spans := m.stripChipLayout()
@@ -514,7 +573,7 @@ func (m model) stripDetail() string {
 		if n := counts[detect.Idle]; n > 0 {
 			parts = append(parts, fmt.Sprintf("○%d", n))
 		}
-		return lineStyle.Render(strings.Join(parts, "  "))
+		return strings.Join(parts, "  ")
 	}
 	r := m.results[m.cursor]
 	name := r.Agent
@@ -543,21 +602,6 @@ func baseName(p string) string {
 		return p[i+1:] + "/"
 	}
 	return p + "/"
-}
-
-// fitLine truncates a styled line to width visible cells (ellipsised) and pads
-// it back out to exactly width, so a strip row never wraps.
-func fitLine(s string, width int) string {
-	if width <= 0 {
-		return s
-	}
-	if ansi.StringWidth(s) > width {
-		s = ansi.Truncate(s, width, "…")
-	}
-	if w := ansi.StringWidth(s); w < width {
-		s += strings.Repeat(" ", width-w)
-	}
-	return s
 }
 
 // version is stamped at build time: -ldflags "-X main.version=v1.2.3".

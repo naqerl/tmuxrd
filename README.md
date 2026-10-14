@@ -125,8 +125,10 @@ fits (`window-size latest`, tmux's default):
 
 - **60 columns or more** — a 32-column left sidebar that lists one row per agent.
 - **fewer than 60 columns** — a **2-row full-width strip across the top**, because on a phone
-  columns are the scarce resource and rows are not. Row 1 is a row of agent chips, the selected one
-  reversed; row 2 describes the selected agent. `1`–`9` switch to an agent in one keystroke.
+  columns are the scarce resource and rows are not. The strip is its own surface: a full-width bar
+  with an alternate background, on which each agent is a padded **tab**; the selected tab is
+  highlighted (that highlight replaces the desktop sidebar's `>`). Row 2 describes the selected
+  agent. `1`–`9` switch to an agent in one keystroke.
 
 The shape is re-checked every time the window resizes and by the daemon (every tick), so attaching
 from a phone flips the sidebar to the strip and attaching from a desktop flips it back. A window
@@ -156,8 +158,8 @@ set -g @tmuxrd_mobile_width 50
 | `@tmuxrd_strip_height` | rows the mobile strip takes (default `2`) |
 | `@tmuxrd_side_width` | columns the desktop sidebar takes (default `32`) |
 
-The status line shows a one-line summary via `tmuxrd summary`:
-`agents=3 idle=1 working=1 blocked=1`.
+tmuxrd does not touch your status line. `tmuxrd summary` is available as a command if you want to
+put a one-line census (`agents=3 idle=1 working=1 blocked=1`) there yourself.
 
 ## How state is detected
 
@@ -177,7 +179,7 @@ starts working.
 
 ```sh
 make build        # bin/tmuxrd + cmd/fakeagent/fakeagent
-make integration  # the godog suite (34 scenarios / 261 steps)
+make integration  # the godog suite (46 scenarios)
 make vet
 ```
 
@@ -193,7 +195,7 @@ make vet
 | `tmuxrd adapt [--create]` | reshape sidebars to match their window; `--create` also adds a missing one |
 | `tmuxrd notify` | tell the daemon to re-detect now |
 | `tmuxrd stop` | shut down this server's daemon (a scoped restart; the installer uses it) |
-| `tmuxrd summary` | one-line agent census for the status line |
+| `tmuxrd summary` | one-line agent census, e.g. for a custom status line |
 
 ## Known limits
 
