@@ -284,25 +284,26 @@ func stateGlyph(s detect.State, spinView string) string {
 }
 
 // stateColor is the indicator colour for a row. The unselected row is light, so
-// it uses the dark ANSI variants (1/2/3); the selected row is blue, so it uses
-// the bright ones (9/10/11). Picking the variant that contrasts with the row
-// background is what keeps the glyph readable on both.
+// the states that keep a colour use the dark ANSI variants (1/2); the selected
+// row is blue, so they use the bright ones (9/10). The working spinner is not a
+// state colour at all — it follows the row's foreground (black on the light row,
+// white on the blue one), so only blocked and idle carry colour.
 func stateColor(s detect.State, selected bool) lipgloss.TerminalColor {
 	if selected {
 		switch s {
 		case detect.Working:
-			return lipgloss.ANSIColor(11) // bright yellow
+			return rowSelFg // white
 		case detect.Blocked:
 			return lipgloss.ANSIColor(9) // bright red
 		case detect.Idle:
 			return lipgloss.ANSIColor(10) // bright green
 		default:
-			return lipgloss.ANSIColor(15) // bright white
+			return rowSelFg // white
 		}
 	}
 	switch s {
 	case detect.Working:
-		return lipgloss.ANSIColor(3) // yellow on the light row
+		return rowFg // black
 	case detect.Blocked:
 		return lipgloss.ANSIColor(1) // red on the light row
 	case detect.Idle:
