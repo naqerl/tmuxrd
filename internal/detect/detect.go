@@ -1,6 +1,8 @@
 package detect
 
 import (
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/naqerl/terdr/internal/tmux"
@@ -83,6 +85,40 @@ func classifyTail(tail string) State {
 	return Unknown
 }
 
+
+func foregroundCommand(shellPid string) string {
+	pid, err := strconv.Atoi(shellPid)
+	if err != nil || pid <= 0 {
+		return ""
+	}
+	stat, err := os.ReadFile(fmtProc(pid) + "/stat")
+	if err != nil {
+		return ""
+	}
+	r := strings.LastIndex(string(stat), ")")
+	if r < 0 || r+2 >= len(stat) {
+		return ""
+	}
+	fields := strings.Fields(string(stat)[r+2:])
+	// after ): state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
+	if len(fields) < 6 {
+		return ""
+	}
+	tpgid, err := strconv.Atoi(fields[5])
+	if err != nil || tpgid <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(fmtProc(tpgid) + "/comm")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func fmtProc(pid int) string {
+	return "/proc/" + strconv.Itoa(pid)
+}
+
 func Detect() []Result {
 	panes, err := tmux.ListPanes()
 	if err != nil {
@@ -90,7 +126,13 @@ func Detect() []Result {
 	}
 	var out []Result
 	for _, p := range panes {
-		agent := isAgentCmd(p.Cmd)
+		cmd := p.Cmd
+		if cmd == "" || isAgentCmd(cmd) == "" {
+			if fc := foregroundCommand(p.PID); fc != "" {
+				cmd = fc
+			}
+		}
+		agent := isAgentCmd(cmd)
 		if agent == "" {
 			continue
 		}
