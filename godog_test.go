@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,7 +18,16 @@ import (
 	"github.com/naqerl/tmuxrd/tmuxenv"
 )
 
-const repoRoot = "/home/user/terdr"
+// repoRoot is the checkout under test. The suite runs in the package directory,
+// so the working directory is the repo root — deriving it keeps the suite
+// runnable anywhere, not just on the machine it was written on.
+var repoRoot = func() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	return wd
+}()
 
 // sc binds step definitions to one isolated tmuxenv.Env per scenario.
 type sc struct {

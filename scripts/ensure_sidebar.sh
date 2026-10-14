@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 . "$(dirname "$0")/_tmux.sh"
-BIN="/home/user/terdr/bin/tmuxrd"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$ROOT/bin/tmuxrd"
 enabled=$(tmuxi show-option -gqv @tmuxrd_enabled)
 [ "$enabled" = "0" ] && exit 0
 if ! tmuxi list-panes -F '#{@tmuxrd_sidebar}' | grep -q '^1$'; then

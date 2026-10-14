@@ -27,6 +27,7 @@ type Env struct {
 	Bin          string // absolute path to the tmuxrd binary
 	Scripts      string // absolute path to the scripts/ dir
 	Config       string // absolute path to tmuxrd.tmux
+	Root         string // repo root, published as @tmuxrd_root for the config
 	Daemon       int    // pid of the first daemon we started, 0 if none
 	daemons      []int  // every daemon pid we started, so Close can reap them all
 	fakeName     string
@@ -55,6 +56,7 @@ func New(socket string, repoRoot string) (*Env, error) {
 		Bin:     filepath.Join(repoRoot, "bin", "tmuxrd"),
 		Scripts: filepath.Join(repoRoot, "scripts"),
 		Config:  filepath.Join(repoRoot, "tmuxrd.tmux"),
+		Root:    repoRoot,
 	}
 	fakeAgentSrc = filepath.Join(repoRoot, "cmd", "fakeagent", "fakeagent")
 	if _, err := os.Stat(fakeAgentSrc); err != nil {
@@ -293,6 +295,11 @@ func (e *Env) ensureClientEnv() error {
 		if _, err := e.Server.Run("set-environment", "-g", kv[0], kv[1]); err != nil {
 			return fmt.Errorf("set-environment %s: %w", kv[0], err)
 		}
+	}
+	// The config resolves every path from @tmuxrd_root, so it must point at this
+	// checkout before the config is sourced.
+	if _, err := e.Server.Run("set-option", "-gq", "@tmuxrd_root", e.Root); err != nil {
+		return fmt.Errorf("set-option @tmuxrd_root: %w", err)
 	}
 	e.envPublished = true
 	return nil

@@ -277,12 +277,17 @@ func (m model) View() string {
 	return s
 }
 
+// version is stamped at build time: -ldflags "-X main.version=v1.2.3".
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: tmuxrd run|summary")
+		fmt.Println("usage: tmuxrd client|daemon|notify|summary|version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Println(version)
 	case "summary":
 		srv := tmux.NewServerFromEnv()
 		results := detect.Detect(srv)

@@ -1,0 +1,57 @@
+name: release
+
+# Publishing a v* tag builds the binaries and creates the GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
+
+      - name: test
+        run: go test ./...
+
+      - name: build release archives
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%%/*}"
+            arch="${target##*/}"
+            pkg="tmuxrd_${os}_${arch}"
+            rm -rf "dist/${pkg}"
+            mkdir -p "dist/${pkg}/bin" "dist/${pkg}/scripts"
+            CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
+              go build -trimpath -ldflags "-s -w -X main.version=${version}" \
+              -o "dist/${pkg}/bin/tmuxrd" ./cmd/tmuxrd
+            cp tmuxrd.tmux README.md "dist/${pkg}/"
+            cp scripts/*.sh "dist/${pkg}/scripts/"
+            tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
+            rm -rf "dist/${pkg}"
+          done
+          (cd dist && sha256sum *.tar.gz > checksums.txt)
+          ls -l dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
