@@ -81,7 +81,7 @@ const (
 func banner(state string) string {
 	switch state {
 	case stateWorking:
-		return "Thinking...\nworking\n"
+		return "Thinking...\nworking\n↑1.2M ↓132k  27.0%\n"
 	case stateBlocked:
 		return "Working...\nChoose an option:\n[y/n]\n"
 	case stateUnknown:
@@ -243,6 +243,11 @@ func (m model) View() string {
 			"  " + spinnerFrames[m.spin] + " Thinking... (" + elapsed.String() + ")",
 			"  working",
 			"",
+			// A realistic status line a real agent shows while working. It
+			// carries a token counter ("1.2M") on purpose: blocked detection
+			// must never match bare numbers, so this keeps the working case a
+			// regression guard for that (see the blockedPats comment).
+			styleDim.Render("↑1.2M ↓132k  27.0%"),
 			styleDim.Render("esc:cancel  ctrl+c:cancel"),
 		}, "\n")
 	case stateBlocked:

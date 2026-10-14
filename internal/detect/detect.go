@@ -60,8 +60,8 @@ func classifyTail(tail string) State {
 	joined := strings.ToLower(strings.Join(nz, "\n"))
 	// blocked strict patterns
 	blockedPats := []string{
-		"[y/n]", "yes/no", "approve", "allow?", "permission", "select:", "select",
-		"❯ 1.", "1.", "option", "┃", "action required",
+		"[y/n]", "yes/no", "approve", "allow?", "permission", "select:",
+		"❯ 1.", "choose an option", "action required",
 		"yes, proceed", "no, reject", "ctrl+o:yolo",
 		"tab:scrollback", "shift+x:dismiss",
 	}
@@ -72,7 +72,7 @@ func classifyTail(tail string) State {
 	}
 	// working
 	workPats := []string{"working", "thinking", "…", "...", "running", "executing",
-			"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/"}
+		"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/"}
 	for _, p := range workPats {
 		if strings.Contains(joined, p) {
 			return Working
@@ -100,7 +100,6 @@ func classifyTail(tail string) State {
 	}
 	return Unknown
 }
-
 
 func isShell(s string) bool {
 	switch strings.ToLower(s) {
