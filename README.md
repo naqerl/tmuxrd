@@ -51,7 +51,8 @@ cd ~/.tmuxrd && make build          # builds bin/tmuxrd and the test fakeagent
 Add this to `~/.tmux.conf`:
 
 ```
-set -g @tmuxrd_root "$HOME/.tmuxrd"          # omit if you installed to /home/user/terdr
+# @tmuxrd_root is where you installed tmuxrd (the directory holding tmuxrd.tmux)
+set -g @tmuxrd_root "$HOME/.tmuxrd"
 source-file "$HOME/.tmuxrd/tmuxrd.tmux"
 ```
 
@@ -62,7 +63,7 @@ tmux source-file ~/.tmux.conf
 ```
 
 The sidebar appears in every window. `tmuxrd` resolves all of its paths from `@tmuxrd_root`, so
-the checkout can live anywhere.
+the checkout can live anywhere — set it whenever you install outside the default root.
 
 ## Keys
 
