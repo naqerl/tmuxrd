@@ -209,7 +209,7 @@ func (m model) View() string {
 	if m.width > 0 {
 		line = strings.Repeat("─", m.width)
 	}
-	s := titleStyle.Render(" tmuxrd") + "\n" + lineStyle.Render(line) + "\n"
+	s := titleStyle.Render("tmuxrd") + "\n" + lineStyle.Render(line) + "\n"
 	// group agent results by session preserving order
 	sessions := []string{}
 	groups := map[string][]int{}
@@ -228,7 +228,7 @@ func (m model) View() string {
 	_ = idx
 	_ = flat
 	for _, sess := range sessions {
-		s += lipgloss.NewStyle().Bold(true).Render(" "+sess) + "\n"
+		s += lipgloss.NewStyle().Bold(true).Render(sess) + "\n"
 		for _, gi := range groups[sess] {
 			r := m.results[gi]
 			pth := r.Path
