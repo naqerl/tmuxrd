@@ -59,7 +59,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 var (
 	titleStyle = lipgloss.NewStyle().Bold(true)
 	lineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	selStyle   = lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("15"))
+	selStyle   = lipgloss.NewStyle().Reverse(true)
 	stateStyle = map[detect.State]lipgloss.Style{
 		detect.Idle:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
 		detect.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
@@ -113,7 +113,7 @@ func (m model) View() string {
 			circle := statusCircle(r.State)
 			line := fmt.Sprintf("   %s  %-8s %s", circle, r.Agent, pth)
 			if gi == m.cursor {
-				s += selStyle.Render(line) + "\n"
+				s += selStyle.Width(m.width).Render(line) + "\n"
 			} else {
 				s += line + "\n"
 			}
