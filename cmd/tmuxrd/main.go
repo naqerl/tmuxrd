@@ -221,12 +221,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // Palette in ANSI terminal colours (0-15), not fixed 256-colour indices, so the
 // sidebar follows whatever theme the terminal uses. The bar is bright-black so
-// the sidebar is distinct from the agent pane; agent rows/tabs are black pills
-// on it and the selected one is blue.
+// the sidebar is distinct from the agent pane. An unselected agent is drawn as
+// a filled (light) pill with black text — the inverse of the agent text, for
+// contrast — and the selected one is blue.
 const (
-	barBg    lipgloss.ANSIColor = 8 // bright black: the sidebar surface
-	rowBg    lipgloss.ANSIColor = 0 // black: an agent row / tab
-	rowSelBg lipgloss.ANSIColor = 4 // blue: the selected row / tab
+	barBg    lipgloss.ANSIColor = 8  // bright black: the sidebar surface
+	rowBg    lipgloss.ANSIColor = 7  // light: an unselected agent row / tab
+	rowFg    lipgloss.ANSIColor = 0  // black text on the light row
+	rowSelBg lipgloss.ANSIColor = 4  // blue: the selected row / tab
+	rowSelFg lipgloss.ANSIColor = 15 // bright white on blue
 )
 
 var (
@@ -234,8 +237,8 @@ var (
 	barTitleStyle  = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
 	barRuleStyle   = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(0))
 	barHeaderStyle = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
-	tabStyle       = lipgloss.NewStyle().Background(rowBg).Foreground(lipgloss.ANSIColor(7))
-	tabSelStyle    = lipgloss.NewStyle().Background(rowSelBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
+	tabStyle       = lipgloss.NewStyle().Background(rowBg).Foreground(rowFg)
+	tabSelStyle    = lipgloss.NewStyle().Background(rowSelBg).Foreground(rowSelFg).Bold(true)
 )
 
 // workedLabel renders how long the agent has been working on this run, e.g.
@@ -280,20 +283,32 @@ func stateGlyph(s detect.State, spinView string) string {
 	}
 }
 
-// stateColor is the glyph colour inside a row/tab. The bright ANSI variants are
-// used because the rows/tabs are dark: on the row background the plain red /
-// green / yellow are too low-contrast to read (this is the bug the plain
-// 256-colour palette had on a light row background).
-func stateColor(s detect.State) lipgloss.TerminalColor {
+// stateColor is the indicator colour for a row. The unselected row is light, so
+// it uses the dark ANSI variants (1/2/3); the selected row is blue, so it uses
+// the bright ones (9/10/11). Picking the variant that contrasts with the row
+// background is what keeps the glyph readable on both.
+func stateColor(s detect.State, selected bool) lipgloss.TerminalColor {
+	if selected {
+		switch s {
+		case detect.Working:
+			return lipgloss.ANSIColor(11) // bright yellow
+		case detect.Blocked:
+			return lipgloss.ANSIColor(9) // bright red
+		case detect.Idle:
+			return lipgloss.ANSIColor(10) // bright green
+		default:
+			return lipgloss.ANSIColor(15) // bright white
+		}
+	}
 	switch s {
 	case detect.Working:
-		return lipgloss.ANSIColor(11) // bright yellow
+		return lipgloss.ANSIColor(3) // yellow on the light row
 	case detect.Blocked:
-		return lipgloss.ANSIColor(9) // bright red
+		return lipgloss.ANSIColor(1) // red on the light row
 	case detect.Idle:
-		return lipgloss.ANSIColor(10) // bright green
+		return lipgloss.ANSIColor(2) // green on the light row
 	default:
-		return lipgloss.ANSIColor(7) // white
+		return lipgloss.ANSIColor(8) // quiet grey on the light row
 	}
 }
 
@@ -385,7 +400,7 @@ func (m model) renderSideRow(r detect.Result, selected bool, lead, left, path st
 		rowStyle = tabSelStyle
 		bg = rowSelBg
 	}
-	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State))
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State, selected))
 	out := rowStyle.Render(lead+" ") +
 		glyph.Render(stateGlyph(r.State, m.spin.View())) +
 		rowStyle.Render(left)
@@ -464,7 +479,7 @@ func (m model) renderTab(i int) string {
 		tab = tabSelStyle
 		bg = rowSelBg
 	}
-	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State))
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State, i == m.cursor))
 	return tab.Render(" ") + glyph.Render(stateGlyph(r.State, m.spin.View())) + tab.Render(" "+r.Agent+" ")
 }
 
