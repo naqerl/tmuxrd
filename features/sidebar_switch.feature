@@ -39,3 +39,4 @@ Feature: Sidebar reflects window focus quickly and stays consistent
     And I refresh the sidebar
     Then the sidebar should be visible
     And the sidebar content should mention agent "pi"
+    And directory names should be marked with a trailing slash

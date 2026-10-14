@@ -195,7 +195,18 @@ func (m model) View() string {
 			if pth != "" {
 				parts := strings.Split(strings.TrimRight(pth, "/"), "/")
 				pth = parts[len(parts)-1]
-				if pth == "" { pth = "/" }
+				if pth == "" {
+					pth = "/"
+				}
+			}
+			// Show a directory as "name/ ": the slash marks it as a directory,
+			// and the trailing space keeps it off the pane divider.
+			if pth != "" {
+				if strings.HasSuffix(pth, "/") {
+					pth += " "
+				} else {
+					pth += "/ "
+				}
 			}
 			circle := statusCircle(r.State, m.spin.View())
 			mark := " "

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -482,6 +483,28 @@ func InitializeScenario(s *godog.ScenarioContext) {
 			}
 			if !strings.Contains(content, agent) {
 				return fmt.Errorf("sidebar does not mention %s\n%s", agent, content)
+			}
+			return nil
+		})
+	})
+	s.Step(`^directory names should be marked with a trailing slash$`, func(ctx context.Context) error {
+		// Directories render as "name/ " (the trailing space keeps them off the
+		// pane divider). capture-pane trims trailing whitespace, so the slash is
+		// what is observable — and its presence at the end of the row is itself
+		// the proof that the name is not flush against the divider.
+		return eventually(3*time.Second, func() error {
+			content, err := cur.env.SidebarContent()
+			if err != nil {
+				return err
+			}
+			base := filepath.Base(repoRoot)
+			if !strings.Contains(content, base+"/") {
+				return fmt.Errorf("no %q in sidebar:\n%s", base+"/", content)
+			}
+			for _, line := range strings.Split(content, "\n") {
+				if strings.Contains(line, base+"/") && !strings.HasSuffix(line, base+"/") {
+					return fmt.Errorf("row does not end at the directory marker: %q", line)
+				}
 			}
 			return nil
 		})
