@@ -462,6 +462,54 @@ func InitializeScenario(s *godog.ScenarioContext) {
 	s.Step(`^session "([^"]*)" has an extra non-agent window$`, func(ctx context.Context, sess string) error {
 		return cur.env.NewWindow(sess, "plain", "")
 	})
+	s.Step(`^the sidebar should show a timer for agent "([^"]*)"$`, func(ctx context.Context, agent string) error {
+		return eventually(3*time.Second, func() error {
+			_, err := cur.env.TimerFor(agent)
+			return err
+		})
+	})
+	s.Step(`^the timer for agent "([^"]*)" should increase within (\d+)ms$`, func(ctx context.Context, agent string, ms int) error {
+		// The timer counts whole seconds, so an increase proves it is running.
+		tok, err := cur.env.TimerFor(agent)
+		if err != nil {
+			return err
+		}
+		start, err := tmuxenv.ParseTimer(tok)
+		if err != nil {
+			return err
+		}
+		deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if tok, err = cur.env.TimerFor(agent); err != nil {
+				return err
+			}
+			if got, err := tmuxenv.ParseTimer(tok); err == nil && got > start {
+				return nil
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		return fmt.Errorf("timer for %s never advanced past %q", agent, tok)
+	})
+	s.Step(`^the timer for agent "([^"]*)" should stop within (\d+)ms$`, func(ctx context.Context, agent string, ms int) error {
+		deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
+		var last string
+		for time.Now().Before(deadline) {
+			tok, err := cur.env.TimerFor(agent)
+			if err != nil {
+				return err
+			}
+			time.Sleep(1200 * time.Millisecond)
+			again, err := cur.env.TimerFor(agent)
+			if err != nil {
+				return err
+			}
+			if tok == again {
+				return nil
+			}
+			last = tok + " -> " + again
+		}
+		return fmt.Errorf("timer for %s kept running: %s", agent, last)
+	})
 	s.Step(`^the sidebar should show no selection marker$`, func(ctx context.Context) error {
 		return eventually(2*time.Second, func() error {
 			rows, err := cur.env.SidebarMarked()
@@ -654,9 +702,9 @@ func InitializeScenario(s *godog.ScenarioContext) {
 }
 
 // sidebarAgentLine returns the sidebar's rendered line for one agent. Rows
-// look like "<mark> <glyph>  <win>: <label>  <path>"; the label is the window
-// name when it differs from the agent name, e.g. "w1 (claude)". Matches are
-// retried through eventually() so the assertion measures state, not paint.
+// look like "<mark> <glyph> <win>:<label> [timer] <path>"; the label is the
+// window name when it differs from the agent name, e.g. "w1 (claude)". Matches
+// are retried through eventually() so the assertion measures state, not paint.
 func sidebarAgentLine(e *tmuxenv.Env, agent string) (string, error) {
 	content, err := e.SidebarContent()
 	if err != nil {
@@ -664,7 +712,7 @@ func sidebarAgentLine(e *tmuxenv.Env, agent string) (string, error) {
 	}
 	for _, l := range strings.Split(content, "\n") {
 		if strings.Contains(l, "("+agent+")") ||
-			strings.Contains(l, ": "+agent) ||
+			strings.Contains(l, ":"+agent) ||
 			strings.Contains(l, " "+agent+" ") {
 			return l, nil
 		}

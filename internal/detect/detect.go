@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/naqerl/tmuxrd/internal/tmux"
 )
@@ -25,6 +26,10 @@ type Result struct {
 	Session    string
 	Window     string
 	WindowName string
+	// Worked is how long this pane has been in the working state, accumulated
+	// across working periods (it pauses when the agent stops working and resumes
+	// when it starts again). The daemon owns it; Detect leaves it zero.
+	Worked time.Duration
 }
 
 var agents = []string{"pi", "claude", "codex", "opencode", "cursor", "kimi", "hermes", "gemini", "grok"}
@@ -50,6 +55,16 @@ func classifyTail(tail string) State {
 	if len(nz) > 6 {
 		nz = nz[len(nz)-6:]
 	}
+	// Working is the agent's braille spinner animation and nothing else.
+	// Word patterns ("working", "thinking", "running", "waiting", "...")
+	// matched ordinary text on screen — a token counter, a path, a file scrolled
+	// past — so panes were reported as working when they were not. The spinner
+	// is the agent's own progress indicator, so its presence is the signal.
+	for _, l := range nz {
+		if strings.ContainsAny(l, brailleSpinner) {
+			return Working
+		}
+	}
 	// Strong idle: shell prompt visible at the end.
 	if len(nz) > 0 {
 		last := strings.TrimSpace(nz[len(nz)-1])
@@ -70,25 +85,9 @@ func classifyTail(tail string) State {
 			return Blocked
 		}
 	}
-	// working
-	workPats := []string{"working", "thinking", "…", "...", "running", "executing",
-		"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/"}
-	for _, p := range workPats {
-		if strings.Contains(joined, p) {
-			return Working
-		}
-	}
-	// idle when herdr-style footer present with no cancel hints
-	if strings.Contains(joined, "ctrl+.:shortcuts") && !strings.Contains(joined, "esc:cancel") && !strings.Contains(joined, "ctrl+c:cancel") {
+	// idle when the herdr-style footer is present
+	if strings.Contains(joined, "ctrl+.:shortcuts") {
 		return Idle
-	}
-	// spinner glyphs
-	if len(nz) > 0 {
-		for _, r := range nz[len(nz)-1:] {
-			if strings.ContainsAny(r, "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ") {
-				return Working
-			}
-		}
 	}
 	// idle prompt
 	last := ""
@@ -100,6 +99,18 @@ func classifyTail(tail string) State {
 	}
 	return Unknown
 }
+
+// brailleSpinner is every Unicode braille pattern (U+2801..U+28FF). All the
+// spinner animations in use fall in this range — bubbles' MiniDot
+// (⠏⠋⠙⠹⠸⠼⠴⠦⠧⠇), Dot (⣾⣽⣻⢿⡿⣟⣯⣷) and friends — so matching the block
+// covers every frame without having to track each animation's glyph set.
+var brailleSpinner = func() string {
+	var b strings.Builder
+	for r := rune(0x2801); r <= 0x28FF; r++ {
+		b.WriteRune(r)
+	}
+	return b.String()
+}()
 
 func isShell(s string) bool {
 	switch strings.ToLower(s) {

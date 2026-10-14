@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -108,11 +109,19 @@ func (e *Env) writeFake(name string) error {
 	if fakeAgentSrc == "" {
 		return fmt.Errorf("fakeAgentSrc not initialised")
 	}
+	dst := filepath.Join(e.BinDir, name)
+	// A hardlink is enough: /proc/<pid>/comm and tmux's pane_current_command are
+	// taken from the executed basename, so a link named "pi" reports "pi".
+	// Copying the (multi-MB) binary ten times per scenario filled /tmp.
+	if err := os.Link(fakeAgentSrc, dst); err == nil {
+		return nil
+	}
+	// Different filesystem: fall back to a copy.
 	data, err := os.ReadFile(fakeAgentSrc)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(e.BinDir, name), data, 0o755)
+	return os.WriteFile(dst, data, 0o755)
 }
 
 // PATH returns the fake-bin-augmented PATH for child processes.
@@ -519,6 +528,44 @@ func (e *Env) KillPane(id string) (string, error) {
 func (e *Env) SelectWindow(target string) error {
 	_, err := e.run("select-window", "-t", target)
 	return err
+}
+
+// timerRe matches the timer the sidebar renders on a row: 0s, 45s, 1m, 1m30s.
+var timerRe = regexp.MustCompile(`(?:^|\s)(\d+m\d+s|\d+m|\d+s)(?:\s|$)`)
+
+// TimerFor returns the timer token shown on the agent's row, or an error when
+// the row exists but carries no timer.
+func (e *Env) TimerFor(agent string) (string, error) {
+	content, err := e.SidebarContent()
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(content, "\n") {
+		if !strings.Contains(line, ":"+agent) && !strings.Contains(line, "("+agent+")") {
+			continue
+		}
+		if m := timerRe.FindStringSubmatch(line); m != nil {
+			return m[1], nil
+		}
+		return "", fmt.Errorf("no timer on the row for %s: %q", agent, line)
+	}
+	return "", fmt.Errorf("no row for agent %q\n%s", agent, content)
+}
+
+// ParseTimer converts a rendered timer token ("1m30s") back to a duration.
+func ParseTimer(s string) (time.Duration, error) {
+	m := regexp.MustCompile(`^(?:(\d+)m)?(?:(\d+)s)?$`).FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("bad timer %q", s)
+	}
+	mins, secs := 0, 0
+	if m[1] != "" {
+		mins, _ = strconv.Atoi(m[1])
+	}
+	if m[2] != "" {
+		secs, _ = strconv.Atoi(m[2])
+	}
+	return time.Duration(mins)*time.Minute + time.Duration(secs)*time.Second, nil
 }
 
 // SidebarPane returns the first sidebar pane id.

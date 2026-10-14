@@ -92,7 +92,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.results = msg.Results
 		m.syncMarker()
 	case tickMsg:
+		// Keep the daemon's accumulated work time: this local fallback cannot
+		// know it, and losing it would make the timer flicker every 5s.
+		prev := make(map[string]time.Duration, len(m.results))
+		for _, r := range m.results {
+			prev[r.PaneID] = r.Worked
+		}
 		m.results = detect.Detect(m.srv)
+		for i := range m.results {
+			if d, ok := prev[m.results[i].PaneID]; ok && d > m.results[i].Worked {
+				m.results[i].Worked = d
+			}
+		}
 		m.syncMarker()
 		return m, tea.Batch(tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
 	case spinner.TickMsg:
@@ -130,6 +141,33 @@ var (
 		detect.Unknown: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
 	}
 )
+
+// workedLabel renders how long the agent has been working, e.g. "0s", "45s",
+// "1m", "1m30s". It is empty for an agent that has never worked, so the column
+// costs nothing until it is useful.
+func workedLabel(r detect.Result) string {
+	if r.Worked == 0 && r.State != detect.Working {
+		return ""
+	}
+	return formatDuration(r.Worked)
+}
+
+// formatDuration renders a duration the way the sidebar shows it: 0s, 45s, 1m,
+// 1m30s, 12m5s.
+func formatDuration(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 0 {
+		s = 0
+	}
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	m, rem := s/60, s%60
+	if rem == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm%ds", m, rem)
+}
 
 func statusCircle(s detect.State, spinView string) string {
 	st := stateStyle[s]
@@ -217,7 +255,10 @@ func (m model) View() string {
 			if r.WindowName != "" && r.WindowName != r.Agent {
 				label = r.WindowName + " (" + r.Agent + ")"
 			}
-			left := fmt.Sprintf("%s  %s  %s: %-12s", mark, circle, r.Window, label)
+			left := fmt.Sprintf("%s %s %s:%-12s", mark, circle, r.Window, label)
+			if t := workedLabel(r); t != "" {
+				left += " " + t
+			}
 			line := left + " " + pth
 			if m.width > 0 {
 				// Measure *visible* width (ignore ANSI colour codes) so the styled

@@ -27,6 +27,13 @@ type stateMsg struct {
 	Results []detect.Result `json:"results"`
 }
 
+// workTime is the daemon's accumulator for one pane: how long it has worked in
+// total, plus the start of the current working period (zero when not working).
+type workTime struct {
+	accumulated time.Duration
+	since       time.Time
+}
+
 var socketPath string
 
 // initSocketPath derives the daemon's Unix socket. It is namespaced by the tmux
@@ -64,13 +71,48 @@ func cmdDaemon() {
 	defer os.Remove(socketPath)
 
 	var (
-		mu       sync.Mutex
-		clients  = map[net.Conn]struct{}{}
-		state    []detect.Result
+		mu        sync.Mutex
+		clients   = map[net.Conn]struct{}{}
+		state     []detect.Result
+		workTimes = map[string]*workTime{}
 	)
+	// applyWorkTime accumulates how long each pane has been working. It pauses
+	// when the agent stops working and resumes when it starts again, so the
+	// sidebar can show a timer that stops and continues with the agent.
+	applyWorkTime := func(res []detect.Result, now time.Time) {
+		seen := make(map[string]bool, len(res))
+		for i := range res {
+			r := &res[i]
+			seen[r.PaneID] = true
+			wt := workTimes[r.PaneID]
+			if wt == nil {
+				wt = &workTime{}
+				workTimes[r.PaneID] = wt
+			}
+			if r.State == detect.Working {
+				if wt.since.IsZero() {
+					wt.since = now
+				}
+				r.Worked = wt.accumulated + now.Sub(wt.since)
+				continue
+			}
+			if !wt.since.IsZero() {
+				wt.accumulated += now.Sub(wt.since)
+				wt.since = time.Time{}
+			}
+			r.Worked = wt.accumulated
+		}
+		for id := range workTimes {
+			if !seen[id] {
+				delete(workTimes, id)
+			}
+		}
+	}
 	refresh := func() {
 		res := detect.Detect(srv)
+		now := time.Now()
 		mu.Lock()
+		applyWorkTime(res, now)
 		state = res
 		snap := append([]detect.Result(nil), res...)
 		conns := make([]net.Conn, 0, len(clients))

@@ -81,7 +81,9 @@ const (
 func banner(state string) string {
 	switch state {
 	case stateWorking:
-		return "Thinking...\nworking\n↑1.2M ↓132k  27.0%\n"
+		// The braille spinner is what detection keys on, so the headless banner
+		// carries one just like the TUI frame does.
+		return "⠋ Thinking...\nworking\n↑1.2M ↓132k  27.0%\n"
 	case stateBlocked:
 		return "Working...\nChoose an option:\n[y/n]\n"
 	case stateUnknown:
