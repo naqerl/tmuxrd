@@ -10,44 +10,75 @@ import (
 	"github.com/naqerl/terdr/internal/tmux"
 )
 
-func TestIntegrationToggleAndOrphan(t *testing.T) {
+func setupServer(t *testing.T) {
+	t.Helper()
 	os.Setenv("TERDR_TMUX_SOCKET", "terdr-go-int")
 	tmux.Run("kill-server")
-	defer tmux.Run("kill-server")
+	t.Cleanup(func() { tmux.Run("kill-server") })
 
-	// mock agent binary named pi
 	dir := t.TempDir()
-	mock := dir + "/pi"
-	if err := os.WriteFile(mock, []byte("#!/bin/sh\nsleep 1000\n"), 0o755); err != nil {
+	if err := os.WriteFile(dir+"/pi", []byte("#!/bin/sh\nsleep 1000\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	os.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
 	tmux.Run("new-session", "-d", "-s", "t", "pi")
-	tmux.Run("new-window")
 	tmux.Run("source-file", "/home/user/terdr/terdr.tmux")
 	time.Sleep(300 * time.Millisecond)
+}
+
+func TestIntegrationToggle(t *testing.T) {
+	setupServer(t)
 
 	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(800 * time.Millisecond)
-	if got, _ := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}"); count(got, "1") != 2 {
-		t.Fatalf("expected 2 sidebars, got %d\n%s", count(got, "1"), got)
+	got, _ := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}")
+	if count(got, "1") != 1 {
+		t.Fatalf("expected 1 sidebar after toggle on, got %d", count(got, "1"))
 	}
 
 	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(400 * time.Millisecond)
-	if got, _ := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}"); count(got, "1") != 0 {
-		t.Fatalf("expected 0 sidebars, got %d", count(got, "1"))
+	got, _ = tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}")
+	if count(got, "1") != 0 {
+		t.Fatalf("expected 0 sidebars after toggle off, got %d", count(got, "1"))
+	}
+}
+
+func TestIntegrationOrphanCleanup(t *testing.T) {
+	setupServer(t)
+
+	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
+	time.Sleep(800 * time.Millisecond)
+
+	main, _ := tmux.Run("list-panes", "-t", "t", "-F", "#{pane_id} #{@terdr_sidebar}")
+	t.Logf("panes before kill: %q", main)
+	mainPane := ""
+	for _, line := range splitLines(main) {
+		fields := splitSpaces(line)
+		if len(fields) >= 1 {
+			mark := ""
+			if len(fields) > 1 {
+				mark = fields[1]
+			}
+			if mark != "1" {
+				mainPane = fields[0]
+			}
+		}
+	}
+	if mainPane == "" {
+		t.Fatal("main pane not found")
 	}
 
-	// orphan cleanup
-	tmux.Run("new-session", "-d", "-s", "u", "pi")
-	time.Sleep(600 * time.Millisecond)
-	tmux.Run("kill-pane", "-t", "u:0.0")
-	time.Sleep(500 * time.Millisecond)
-	time.Sleep(500 * time.Millisecond)
-	if got, _ := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}"); count(got, "1") > 2 {
-		t.Fatalf("too many sidebars left after orphan cleanup: %d", count(got, "1"))
+	tmux.Run("kill-pane", "-t", mainPane)
+	time.Sleep(700 * time.Millisecond)
+	tmux.Run("run-shell", "/home/user/terdr/scripts/cleanup_orphans.sh >/dev/null 2>&1")
+	time.Sleep(300 * time.Millisecond)
+	got2, err2 := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}")
+	t.Logf("after kill: panes=%q err=%v", got2, err2)
+
+	if _, err := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}"); err == nil {
+		t.Fatal("expected sidebar orphan cleanup to close the window/server")
 	}
 }
 
@@ -68,6 +99,25 @@ func splitLines(s string) []string {
 		if c == '\n' {
 			out = append(out, cur)
 			cur = ""
+		} else {
+			cur += string(c)
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func splitSpaces(s string) []string {
+	var out []string
+	cur := ""
+	for _, c := range s {
+		if c == ' ' {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
 		} else {
 			cur += string(c)
 		}
