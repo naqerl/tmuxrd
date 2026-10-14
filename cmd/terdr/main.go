@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +16,7 @@ import (
 )
 
 type tickMsg time.Time
+type refreshMsg struct{}
 
 type model struct {
 	results []detect.Result
@@ -21,13 +24,21 @@ type model struct {
 	width   int
 }
 
+func waitForSignal() tea.Msg {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGUSR1)
+	<-c
+	signal.Stop(c)
+	return refreshMsg{}
+}
+
 func (m model) Init() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Batch(tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tickMsg:
+	case tickMsg, refreshMsg:
 		m.results = detect.Detect()
 		if cp := tmux.CurrentPane(); cp != "" {
 			for i, r := range m.results {
@@ -40,7 +51,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.results) && len(m.results) > 0 {
 			m.cursor = len(m.results) - 1
 		}
-		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+		return m, tea.Batch(tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyMsg:
