@@ -219,24 +219,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// The sidebar is its own visual surface on both form factors: a solid bar
-// background so it stands out from the agent pane, agent rows on a secondary
-// background, and the selected one on the accent. The mobile strip lays these
-// out horizontally (one padded "tab" per agent); the desktop sidebar stacks
-// them as full-width rows.
+// Palette in ANSI terminal colours (0-15), not fixed 256-colour indices, so the
+// sidebar follows whatever theme the terminal uses. The bar is bright-black so
+// the sidebar is distinct from the agent pane; agent rows/tabs are black pills
+// on it and the selected one is blue.
 const (
-	barBg    lipgloss.Color = "236"
-	rowBg    lipgloss.Color = "239"
-	rowSelBg lipgloss.Color = "62"
+	barBg    lipgloss.ANSIColor = 8 // bright black: the sidebar surface
+	rowBg    lipgloss.ANSIColor = 0 // black: an agent row / tab
+	rowSelBg lipgloss.ANSIColor = 4 // blue: the selected row / tab
 )
 
 var (
-	barStyle       = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("250"))
-	barTitleStyle  = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("252")).Bold(true)
-	barRuleStyle   = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("240"))
-	barHeaderStyle = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("245")).Bold(true)
-	tabStyle       = lipgloss.NewStyle().Background(rowBg).Foreground(lipgloss.Color("253"))
-	tabSelStyle    = lipgloss.NewStyle().Background(rowSelBg).Foreground(lipgloss.Color("231")).Bold(true)
+	barStyle       = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(7))
+	barTitleStyle  = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
+	barRuleStyle   = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(0))
+	barHeaderStyle = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
+	tabStyle       = lipgloss.NewStyle().Background(rowBg).Foreground(lipgloss.ANSIColor(7))
+	tabSelStyle    = lipgloss.NewStyle().Background(rowSelBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
 )
 
 // workedLabel renders how long the agent has been working on this run, e.g.
@@ -281,18 +280,20 @@ func stateGlyph(s detect.State, spinView string) string {
 	}
 }
 
-// stateColor is the glyph colour inside a tab, matching the desktop sidebar's
-// colours for the same states.
+// stateColor is the glyph colour inside a row/tab. The bright ANSI variants are
+// used because the rows/tabs are dark: on the row background the plain red /
+// green / yellow are too low-contrast to read (this is the bug the plain
+// 256-colour palette had on a light row background).
 func stateColor(s detect.State) lipgloss.TerminalColor {
 	switch s {
 	case detect.Working:
-		return lipgloss.Color("3")
+		return lipgloss.ANSIColor(11) // bright yellow
 	case detect.Blocked:
-		return lipgloss.Color("1")
+		return lipgloss.ANSIColor(9) // bright red
 	case detect.Idle:
-		return lipgloss.Color("2")
+		return lipgloss.ANSIColor(10) // bright green
 	default:
-		return lipgloss.Color("8")
+		return lipgloss.ANSIColor(7) // white
 	}
 }
 
