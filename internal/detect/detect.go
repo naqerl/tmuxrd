@@ -102,6 +102,14 @@ func classifyTail(tail string) State {
 }
 
 
+func isShell(s string) bool {
+	switch strings.ToLower(s) {
+	case "bash", "zsh", "fish", "sh", "dash":
+		return true
+	}
+	return false
+}
+
 func foregroundCommand(shellPid string) string {
 	pid, err := strconv.Atoi(shellPid)
 	if err != nil || pid <= 0 {
@@ -154,11 +162,9 @@ func Detect() []Result {
 		}
 		screen := tmux.Capture(p.ID)
 		st := classifyTail(screen)
-		if fc := foregroundCommand(p.PID); fc != "" {
-			lc := strings.ToLower(fc)
-			if lc == "bash" || lc == "zsh" || lc == "fish" || lc == "sh" || lc == "dash" {
-				st = Idle
-			}
+		fc := foregroundCommand(p.PID)
+		if fc == "" || isShell(fc) {
+			st = Idle
 		}
 		out = append(out, Result{PaneID: p.ID, Agent: agent, State: st, Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName})
 	}
