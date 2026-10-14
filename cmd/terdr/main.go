@@ -113,7 +113,9 @@ func (m model) View() string {
 			circle := statusCircle(r.State)
 			line := fmt.Sprintf("   %s  %-8s %s", circle, r.Agent, pth)
 			if gi == m.cursor {
-				s += selStyle.Width(m.width).Render(line) + "\n"
+				w := m.width
+				if w <= 0 { w = 32 }
+				s += selStyle.Width(w).Render(line) + "\n"
 			} else {
 				s += line + "\n"
 			}
