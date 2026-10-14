@@ -7,13 +7,13 @@ import (
 )
 
 type Pane struct {
-	ID          string
-	PID         string
-	Cmd         string
-	Path        string
-	Session     string
-	Window      string
-	WindowName  string
+	ID         string
+	PID        string
+	Cmd        string
+	Path       string
+	Session    string
+	Window     string
+	WindowName string
 }
 
 func Run(args ...string) (string, error) {

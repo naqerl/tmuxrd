@@ -105,7 +105,6 @@ func statusCircle(s detect.State) string {
 	return st.Render(circle)
 }
 
-
 func abbreviatePath(pth string) string {
 	if home, _ := os.UserHomeDir(); home != "" {
 		pth = strings.Replace(pth, home, "~", 1)
@@ -124,7 +123,9 @@ func abbreviatePath(pth string) string {
 
 func (m model) View() string {
 	line := "─"
-	if m.width > 0 { line = strings.Repeat("─", m.width) }
+	if m.width > 0 {
+		line = strings.Repeat("─", m.width)
+	}
 	s := titleStyle.Render(" terdr") + "\n" + lineStyle.Render(line) + "\n"
 	// group agent results by session preserving order
 	sessions := []string{}
