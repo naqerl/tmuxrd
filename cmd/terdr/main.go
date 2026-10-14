@@ -163,7 +163,7 @@ func (m model) View() string {
 			if r.WindowName != "" && r.WindowName != r.Agent {
 				label = r.WindowName + " (" + r.Agent + ")"
 			}
-			left := fmt.Sprintf("%s  %s  %-12s", mark, circle, label)
+			left := fmt.Sprintf("%s  %s  %s: %-12s", mark, circle, r.Window, label)
 			line := left + " " + pth
 			if m.width > 0 {
 				lw := len([]rune(left))
