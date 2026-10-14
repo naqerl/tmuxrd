@@ -52,19 +52,28 @@ func classifyTail(tail string) State {
 	}
 	joined := strings.ToLower(strings.Join(nz, "\n"))
 	// blocked strict patterns
-	blockedPats := []string{"[y/n]", "yes/no", "approve", "allow?", "permission", "select:", "❯ 1.", "1.", "option"}
+	blockedPats := []string{
+		"[y/n]", "yes/no", "approve", "allow?", "permission", "select:", "select",
+		"❯ 1.", "1.", "option", "┃", "action required",
+		"yes, proceed", "no, reject", "ctrl+o:yolo",
+		"tab:scrollback", "shift+x:dismiss",
+	}
 	for _, p := range blockedPats {
 		if strings.Contains(joined, p) {
-			// but ensure a choice/prompt present; strict
 			return Blocked
 		}
 	}
 	// working
-	workPats := []string{"working", "thinking", "…", "...", "running", "executing"}
+	workPats := []string{"working", "thinking", "…", "...", "running", "executing",
+		"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/"}
 	for _, p := range workPats {
 		if strings.Contains(joined, p) {
 			return Working
 		}
+	}
+	// idle when herdr-style footer present with no cancel hints
+	if strings.Contains(joined, "ctrl+.:shortcuts") && !strings.Contains(joined, "esc:cancel") && !strings.Contains(joined, "ctrl+c:cancel") {
+		return Idle
 	}
 	// spinner glyphs
 	if len(nz) > 0 {
