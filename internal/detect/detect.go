@@ -72,7 +72,8 @@ func classifyTail(tail string) State {
 	}
 	// working
 	workPats := []string{"working", "thinking", "…", "...", "running", "executing",
-		"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/"}
+		"waiting", "esc:cancel", "ctrl+c:cancel", "[stop]", "run/", "read/", "search/", "list/",
+		"──", "Working"}
 	for _, p := range workPats {
 		if strings.Contains(joined, p) {
 			return Working
