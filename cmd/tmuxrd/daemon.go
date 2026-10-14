@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/naqerl/tmuxrd/internal/detect"
+	"github.com/naqerl/tmuxrd/internal/layout"
 	"github.com/naqerl/tmuxrd/internal/tmux"
 )
 
@@ -82,10 +83,14 @@ func cmdDaemon() {
 
 	var (
 		mu        sync.Mutex
+		refreshMu sync.Mutex
 		clients   = map[net.Conn]struct{}{}
 		state     []detect.Result
 		workTimes = map[string]*workTime{}
 	)
+	// Layout tunables are read once: they are tmux user options that change
+	// rarely, and the reshape pass runs on every refresh.
+	layoutOpts := layout.OptionsFromServer(srv)
 	// applyWorkTime times the current working period for each pane. Starting to
 	// work (re)sets it, so an agent that goes idle and then works again starts
 	// from zero rather than resuming; stopping freezes the value it reached.
@@ -121,6 +126,15 @@ func cmdDaemon() {
 		}
 	}
 	refresh := func() {
+		// One refresh at a time: a notify (a goroutine) and the ticker can both
+		// fire, and the layout pass creates panes — two concurrent passes could
+		// each decide a window is missing its sidebar and split twice.
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		// Keep every sidebar the shape its window's width calls for. Reshape
+		// only: creating panes is the config hooks' job, so a server that never
+		// loaded tmuxrd never grows sidebars.
+		layout.Ensure(srv, layoutOpts, false)
 		res := detect.Detect(srv)
 		now := time.Now()
 		mu.Lock()
@@ -228,19 +242,65 @@ func cmdNotify() {
 	conn.Write(b)
 }
 
-func runClient() {
-	initSocketPath(tmux.NewServerFromEnv())
-	// connect
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		// fall back: try launching daemon
-		fmt.Fprintln(os.Stderr, "daemon not available")
+// cmdAdapt reshapes every tmuxrd sidebar to match the width of the window it is
+// in: a 32-column left pane on a desktop, a 2-row top strip on a phone.
+//
+// Without --create it only reshapes sidebars that already exist (the same work
+// the daemon does every tick). With --create it also gives a window whose
+// sidebar is missing one in the right shape — the toggle and ensure scripts use
+// that so a new window opens already adapted.
+func cmdAdapt() {
+	srv := tmux.NewServerFromEnv()
+	create := false
+	for _, a := range os.Args[2:] {
+		if a == "--create" {
+			create = true
+		}
+	}
+	if err := layout.Ensure(srv, layout.OptionsFromServer(srv), create); err != nil {
+		fmt.Fprintln(os.Stderr, "adapt:", err)
 		os.Exit(1)
 	}
+}
+
+// runClient runs one sidebar pane's UI. The daemon connection is owned by a
+// goroutine that reconnects on its own (see streamStates), so a daemon restart
+// is invisible to the user.
+func runClient() {
+	initSocketPath(tmux.NewServerFromEnv())
 	m := newModel(tmux.NewServerFromEnv())
-	// reader goroutine sends states into a channel stored in model? We'll use tea.Msg via Cmd.
-	program := tea.NewProgram(m)
-	go func() {
+	// Cell-motion mouse mode: clicks and wheel events are what let a touch
+	// client drive the sidebar (tap a row or chip). tmux must also have
+	// `mouse on` for it to forward the events. bubbletea disables it on exit.
+	program := tea.NewProgram(m, tea.WithMouseCellMotion())
+	done := make(chan struct{})
+	go streamStates(program, done)
+	program.Run()
+	close(done)
+}
+
+// streamStates keeps a connection to the daemon alive and feeds every state
+// snapshot into the program.
+//
+// It reconnects rather than giving up. That matters more than it looks: if the
+// daemon is restarted (an upgrade, a crash, a restart during development) the
+// old code's socket reader just ended, and the sidebar went on rendering its
+// last snapshot forever. The working spinner still animated because it is
+// local, so the symptom was a *frozen timer* and a selection marker that only
+// moved on the 5s local tick — which reads as "the cursor is slow". A sidebar
+// that loses the daemon must reattach and catch up.
+func streamStates(program *tea.Program, done <-chan struct{}) {
+	for {
+		if !sleepOrDone(0, done) {
+			return
+		}
+		conn, err := net.Dial("unix", socketPath)
+		if err != nil {
+			if !sleepOrDone(500*time.Millisecond, done) {
+				return
+			}
+			continue
+		}
 		sc := bufio.NewScanner(conn)
 		for sc.Scan() {
 			var sm stateMsg
@@ -249,10 +309,34 @@ func runClient() {
 			}
 			program.Send(stateUIMsg{Results: sm.Results})
 		}
-	}()
-	// keep conn open by blocking in cmd
-	program.Run()
-	conn.Close()
+		conn.Close()
+		// The daemon closed the connection (a restart, or it exited because its
+		// server went away): wait a beat, then reattach.
+		if !sleepOrDone(500*time.Millisecond, done) {
+			return
+		}
+	}
+}
+
+// sleepOrDone sleeps for d, returning false if done closed first. A d of zero
+// just checks done.
+func sleepOrDone(d time.Duration, done <-chan struct{}) bool {
+	if d <= 0 {
+		select {
+		case <-done:
+			return false
+		default:
+			return true
+		}
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-done:
+		return false
+	}
 }
 
 type stateUIMsg struct {

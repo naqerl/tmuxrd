@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# prefix-b: toggle the sidebar in every window of every session.
+#
+# Enabling delegates creation to `tmuxrd adapt --create`, which builds each
+# window's sidebar in the shape that window's width calls for (a 32-column left
+# pane on a desktop, a 2-row top strip on a phone).
 # shellcheck source=scripts/_tmux.sh
 . "$(dirname "$0")/_tmux.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -8,13 +13,10 @@ if [ -n "$panes" ]; then
   for p in $panes; do tmuxi kill-pane -t "$p"; done
   tmuxi set-option -g @tmuxrd_enabled 0
 else
-  tmuxi list-windows -a -F '#{session_name}:#{window_index}' | while IFS= read -r w; do
-    if ! tmuxi list-panes -t "$w" -F '#{@tmuxrd_sidebar}' | grep -q '^1$'; then
-      newpane=$(tmuxi split-window -hb -t "$w" -d -P -F '#{pane_id}' -l 32 "$BIN client")
-      tmuxi set-option -p -t "$newpane" @tmuxrd_sidebar 1
-      pin_window_name "$w"
-    fi
-  done
   tmuxi set-option -g @tmuxrd_enabled 1
+  "$BIN" adapt --create
+  for w in $(tmuxi list-windows -a -F '#{session_name}:#{window_index}'); do
+    pin_window_name "$w"
+  done
 fi
 exit 0

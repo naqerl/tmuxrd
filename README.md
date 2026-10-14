@@ -70,12 +70,55 @@ the checkout can live anywhere — set it whenever you install outside the defau
 | Key | Action |
 |---|---|
 | `prefix` + `b` | show/hide the sidebar (in every window) |
-| `j` / `k` (or `↓`/`↑`) | go to the next/previous agent — this **switches the window/session** to it |
-| `Enter` | move the keyboard into that agent's pane |
+| `j` / `k` (or `↓`/`↑`, `Tab`/`Shift+Tab`, wheel) | go to the next/previous agent — **switches the window/session** and keeps the keyboard on the sidebar so you can keep stepping |
+| `1`–`9` | jump straight to the Nth agent and put the keyboard in its pane |
+| click / tap | select the agent on that row (desktop) or chip (mobile strip), and put the keyboard in its pane |
+| `Enter` | move the keyboard into the selected agent's pane |
 | `q` / `Ctrl-C` | close a sidebar pane |
 
-Navigation moves the view but keeps the keyboard on the sidebar's pane, so you can keep stepping
-through agents; `Enter` is what actually hands you the pane.
+Relative navigation (`j`/`k`, `Tab`, the wheel) deliberately leaves the keyboard on the sidebar, so
+repeated presses keep stepping. Direct selection (`1`–`9`, a click or a tap) instead lands you in the
+agent pane, ready to type.
+
+### Mouse and touch
+
+Clicks and taps need **both** sides to agree:
+
+- **tmux must have `mouse on`.** tmuxrd does not force it (it would change tmux's behaviour
+  globally). Without it tmux never forwards mouse events into panes, so a tap cannot reach the
+  sidebar. Add `set -g mouse on` to `~/.tmux.conf` if you have not.
+- The sidebar client asks for the mouse itself, so once tmux forwards events a tap on a row or chip
+  selects that agent — the same as `1`-`9`. Most mobile terminals begin reporting taps as soon as
+  the app asks; a few have a “mouse” setting of their own to enable.
+
+## Mobile: the sidebar adapts to the window's width
+
+A tmux window's layout is shared by every attached client, so a phone and a desktop cannot each
+have their own shape at the same moment. tmuxrd adapts to whichever client the window currently
+fits (`window-size latest`, tmux's default):
+
+- **60 columns or more** — a 32-column left sidebar that lists one row per agent.
+- **fewer than 60 columns** — a **2-row full-width strip across the top**, because on a phone
+  columns are the scarce resource and rows are not. Row 1 is a row of agent chips, the selected one
+  reversed; row 2 describes the selected agent. `1`–`9` switch to an agent in one keystroke.
+
+The shape is re-checked every time the window resizes and by the daemon (every tick), so attaching
+from a phone flips the sidebar to the strip and attaching from a desktop flips it back. A window
+whose sidebar is already the right shape is left alone — except that the strip is kept at exactly
+`@tmuxrd_strip_height` rows (a window resize squeezes tmux's smallest pane first, which would
+otherwise leave a one-line strip with no detail line).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `@tmuxrd_mobile_width` | `60` | window width below which the top strip is used |
+| `@tmuxrd_strip_height` | `2` | rows the mobile strip takes |
+| `@tmuxrd_side_width` | `32` | columns the desktop sidebar takes |
+
+Set them before loading `tmuxrd.tmux` (or with `set -g` later and run `tmuxrd adapt`):
+
+```tmux
+set -g @tmuxrd_mobile_width 50
+```
 
 ## Configuration
 
@@ -83,6 +126,9 @@ through agents; `Enter` is what actually hands you the pane.
 |---|---|
 | `@tmuxrd_root` | where tmuxrd is installed (all paths are resolved from it) |
 | `@tmuxrd_enabled` | set to `0` to stop new windows from getting a sidebar |
+| `@tmuxrd_mobile_width` | window width below which the sidebar becomes a top strip (default `60`) |
+| `@tmuxrd_strip_height` | rows the mobile strip takes (default `2`) |
+| `@tmuxrd_side_width` | columns the desktop sidebar takes (default `32`) |
 
 The status line shows a one-line summary via `tmuxrd summary`:
 `agents=3 idle=1 working=1 blocked=1`.
@@ -111,6 +157,16 @@ make vet
 
 `make integration` is hermetic: every scenario runs on its own `tmux -L godog-*` server with
 `-f /dev/null`, so it never touches a real tmux server. It needs `tmux` and `go` on `PATH`.
+
+## Commands
+
+| Command | Purpose |
+|---|---|
+| `tmuxrd daemon` | the watcher; also keeps every sidebar in the right shape |
+| `tmuxrd client` | one sidebar pane's UI (auto-detects side vs strip) |
+| `tmuxrd adapt [--create]` | reshape sidebars to match their window; `--create` also adds a missing one |
+| `tmuxrd notify` | tell the daemon to re-detect now |
+| `tmuxrd summary` | one-line agent census for the status line |
 
 ## Known limits
 

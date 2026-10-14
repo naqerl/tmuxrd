@@ -600,10 +600,116 @@ func (e *Env) SelectPane(paneID string) error {
 	return err
 }
 
+// ResizeWindow sets a window's size. With tmux's default window-size "latest",
+// this is exactly what a client of that size attaching would produce — so it is
+// how a scenario simulates picking up a phone (narrow) or a desktop (wide).
+func (e *Env) ResizeWindow(sess, win string, w, h int) error {
+	out, err := e.run("resize-window", "-t", sess+":"+win, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+	if err != nil {
+		return fmt.Errorf("resize-window %s:%s to %dx%d: %v: %s", sess, win, w, h, err, out)
+	}
+	return nil
+}
+
+// SidebarInWindow returns the pane id of the tmuxrd sidebar in one window, or
+// "" when that window has none.
+func (e *Env) SidebarInWindow(sess, win string) (string, error) {
+	out, err := e.run("list-panes", "-t", sess+":"+win, "-F", "#{pane_id}\t#{@tmuxrd_sidebar}")
+	if err != nil {
+		return "", err
+	}
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) == 2 && strings.TrimSpace(f[1]) == "1" {
+			return strings.TrimSpace(f[0]), nil
+		}
+	}
+	return "", nil
+}
+
+// WindowLayout is the window's recorded sidebar shape (@tmuxrd_layout).
+func (e *Env) WindowLayout(sess, win string) string {
+	out, _ := e.run("display-message", "-p", "-t", sess+":"+win, "#{@tmuxrd_layout}")
+	return strings.TrimSpace(out)
+}
+
+// PaneGeometry returns a pane's left, top, width and height.
+func (e *Env) PaneGeometry(paneID string) (left, top, width, height int, err error) {
+	out, err := e.run("display-message", "-p", "-t", paneID,
+		"#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}")
+	if err != nil {
+		return 0, 0, 0, 0, fmt.Errorf("pane geometry %s: %v: %s", paneID, err, out)
+	}
+	f := strings.Split(strings.TrimSpace(out), "\t")
+	if len(f) != 4 {
+		return 0, 0, 0, 0, fmt.Errorf("pane geometry %s: bad output %q", paneID, out)
+	}
+	left, _ = strconv.Atoi(f[0])
+	top, _ = strconv.Atoi(f[1])
+	width, _ = strconv.Atoi(f[2])
+	height, _ = strconv.Atoi(f[3])
+	return
+}
+
+// WindowGeometry returns a window's width and height.
+func (e *Env) WindowGeometry(sess, win string) (width, height int, err error) {
+	out, err := e.run("display-message", "-p", "-t", sess+":"+win, "#{window_width}\t#{window_height}")
+	if err != nil {
+		return 0, 0, fmt.Errorf("window geometry %s:%s: %v", sess, win, err)
+	}
+	f := strings.Split(strings.TrimSpace(out), "\t")
+	if len(f) != 2 {
+		return 0, 0, fmt.Errorf("window geometry %s:%s: bad output %q", sess, win, out)
+	}
+	width, _ = strconv.Atoi(f[0])
+	height, _ = strconv.Atoi(f[1])
+	return
+}
+
+// Adapt runs the layout pass (`tmuxrd adapt`); create also gives a window whose
+// sidebar is missing one in the right shape.
+func (e *Env) Adapt(create bool) (string, error) {
+	args := []string{"adapt"}
+	if create {
+		args = append(args, "--create")
+	}
+	return e.RunBin(args...)
+}
+
+// SidebarContentIn captures the sidebar of one window.
+func (e *Env) SidebarContentIn(sess, win string) (string, error) {
+	id, err := e.SidebarInWindow(sess, win)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		return "", fmt.Errorf("no sidebar in %s:%s", sess, win)
+	}
+	return e.CapturePane(id), nil
+}
+
 // SendKeys types keys into a pane, e.g. to drive the sidebar TUI.
 func (e *Env) SendKeys(paneID, keys string) error {
 	_, err := e.run("send-keys", "-t", paneID, keys)
 	return err
+}
+
+// ClickPane sends an SGR mouse left-press at the 0-based cell (x, y) into a
+// pane, which is how a tap arrives from a touch client. The SGR wire format is
+// 1-based, so 1 is added here; 0-based matches what bubbletea reports in its
+// MouseMsg. Writing the raw sequence with send-keys -H is deterministic and
+// independent of tmux's own mouse handling.
+func (e *Env) ClickPane(paneID string, x, y int) error {
+	seq := fmt.Sprintf("\x1b[<0;%d;%dM", x+1, y+1)
+	args := []string{"send-keys", "-t", paneID, "-H"}
+	for _, b := range []byte(seq) {
+		args = append(args, fmt.Sprintf("%02x", b))
+	}
+	out, err := e.run(args...)
+	if err != nil {
+		return fmt.Errorf("click %d,%d in %s: %v: %s", x, y, paneID, err, out)
+	}
+	return nil
 }
 
 // SidebarMarked returns the sidebar rows carrying the selection marker, so a

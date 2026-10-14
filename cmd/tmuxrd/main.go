@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -18,7 +16,6 @@ import (
 )
 
 type tickMsg time.Time
-type refreshMsg struct{}
 
 // stateInterval is how often the sidebar re-detects agent state; the working
 // spinner animates independently at spinner.MiniDot.FPS between refreshes.
@@ -31,13 +28,31 @@ type model struct {
 	results []detect.Result
 	cursor  int
 	width   int
-	spin    spinner.Model
+	height  int
+	// strip is true when the pane is a short full-width strip (a phone) rather
+	// than the tall left sidebar (a desktop). force pins the choice (--strip /
+	// --side, or $TMUXRD_LAYOUT) for tests and debugging.
+	strip bool
+	force string
+	spin  spinner.Model
 }
 
 // newModel builds a client model with the working spinner ready to animate.
 func newModel(srv tmux.Server) model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
-	return model{srv: srv, spin: s}
+	return model{srv: srv, spin: s, force: layoutOverride()}
+}
+
+// layoutOverride reads $TMUXRD_LAYOUT ("strip" or "side"), or "" to let the
+// pane's own height decide.
+func layoutOverride() string {
+	switch strings.ToLower(os.Getenv("TMUXRD_LAYOUT")) {
+	case "strip":
+		return "strip"
+	case "side":
+		return "side"
+	}
+	return ""
 }
 
 // syncMarker marks the agent whose window is currently in view, and clears the
@@ -60,23 +75,73 @@ func (m *model) syncMarker() {
 	}
 }
 
-// goTo selects row i and switches the view to that agent's window and session,
-// leaving the keyboard on a sidebar so navigation can continue. Enter
-// (FocusPane) is what moves the keyboard into the agent pane itself.
-func (m *model) goTo(i int) {
+// goTo selects row i and switches the view to that agent's window, leaving the
+// keyboard on a sidebar so navigation can continue (j/k, Tab, the wheel).
+func (m *model) goTo(i int) { m.moveTo(i, false) }
+
+// jumpTo selects row i, switches the view, and puts the keyboard in the agent's
+// pane. That is what a tap or a number key should do: on a touch client the
+// point of selecting is to land in the agent ready to type.
+func (m *model) jumpTo(i int) { m.moveTo(i, true) }
+
+func (m *model) moveTo(i int, focusAgent bool) {
 	if i < 0 || i >= len(m.results) {
 		return
 	}
 	m.cursor = i
+	if focusAgent {
+		m.srv.FocusPane(m.results[i].PaneID)
+		return
+	}
 	m.srv.GoToAgent(m.results[i].PaneID)
 }
 
-func waitForSignal() tea.Msg {
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGUSR1)
-	<-c
-	signal.Stop(c)
-	return refreshMsg{}
+// handleMouse turns a tap or wheel event into a selection. This is what makes
+// the sidebar usable on a touch client: `1`-`9` still work, but a tap on a row
+// (desktop) or a chip (strip) is the natural gesture on a phone.
+func (m *model) handleMouse(e tea.MouseEvent) {
+	switch e.Button {
+	case tea.MouseButtonWheelUp:
+		m.goTo(m.cursor - 1)
+		return
+	case tea.MouseButtonWheelDown:
+		m.goTo(m.cursor + 1)
+		return
+	}
+	// A tap arrives as a left press; ignore release, motion and other buttons.
+	if e.Button != tea.MouseButtonLeft || e.Action != tea.MouseActionPress {
+		return
+	}
+	if m.strip {
+		if i, ok := m.stripChipAt(e.X); ok {
+			m.jumpTo(i)
+		}
+		return
+	}
+	if i, ok := m.sideRowAt(e.Y); ok {
+		m.jumpTo(i)
+	}
+}
+
+// sideRowAt maps a rendered sidebar row to the flat agent index drawn on it,
+// using the same session grouping as sideView. Rows 0 and 1 are the title and
+// the rule; each session then contributes a header row before its agents.
+func (m model) sideRowAt(y int) (int, bool) {
+	if y < 2 {
+		return 0, false
+	}
+	row := 2
+	sessions, groups := m.sessionGroups()
+	for _, sess := range sessions {
+		row++ // session header
+		for _, gi := range groups[sess] {
+			if y == row {
+				return gi, true
+			}
+			row++
+		}
+	}
+	return 0, false
 }
 
 func (m model) Init() tea.Cmd {
@@ -105,7 +170,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncMarker()
-		return m, tea.Batch(tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
+		// Local fallback only: the daemon pushes state every 500ms, so this
+		// 5s re-detect matters only when the connection is briefly down.
+		return m, tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case spinner.TickMsg:
 		// Advance only the spinner animation; never re-run detection here.
 		var cmd tea.Cmd
@@ -113,17 +180,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
+		switch m.force {
+		case "strip":
+			m.strip = true
+		case "side":
+			m.strip = false
+		default:
+			// A sidebar pane created with `-l 2` is exactly two rows tall, which
+			// is the one unambiguous signal that we are a mobile strip.
+			m.strip = m.height > 0 && m.height <= 2
+		}
+	case tea.MouseMsg:
+		m.handleMouse(tea.MouseEvent(msg))
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "j", "down", "ctrl+n":
+		case "j", "down", "ctrl+n", "tab", "l", "right":
 			m.goTo(m.cursor + 1)
-		case "k", "up", "ctrl+p":
+		case "k", "up", "ctrl+p", "shift+tab", "h", "left":
 			m.goTo(m.cursor - 1)
 		case "enter":
 			if m.cursor >= 0 && m.cursor < len(m.results) {
 				m.srv.FocusPane(m.results[m.cursor].PaneID)
+			}
+		default:
+			// 1-9 jump straight to the Nth agent and switch the view to it, so a
+			// phone (no arrow keys) can drive the sidebar with one tap each.
+			if k := msg.String(); len(k) == 1 && k[0] >= '1' && k[0] <= '9' {
+				if n := int(k[0] - '0'); n <= len(m.results) {
+					m.jumpTo(n - 1)
+				}
 			}
 		}
 	}
@@ -204,13 +293,19 @@ func abbreviatePath(pth string) string {
 	return strings.Join(parts, "/")
 }
 
+// View renders the sidebar in whichever shape this pane is: the tall left
+// column, or the short full-width mobile strip.
 func (m model) View() string {
-	line := "─"
-	if m.width > 0 {
-		line = strings.Repeat("─", m.width)
+	if m.strip {
+		return m.stripView()
 	}
-	s := titleStyle.Render("tmuxrd") + "\n" + lineStyle.Render(line) + "\n"
-	// group agent results by session preserving order
+	return m.sideView()
+}
+
+// sessionGroups returns the sessions in display order and, per session, the
+// flat result indices belonging to it. sideView draws from it and sideRowAt
+// hit-tests against it, so what is drawn and what a click hits cannot drift.
+func (m model) sessionGroups() ([]string, map[string][]int) {
 	sessions := []string{}
 	groups := map[string][]int{}
 	for i, r := range m.results {
@@ -219,14 +314,17 @@ func (m model) View() string {
 		}
 		groups[r.Session] = append(groups[r.Session], i)
 	}
-	idx := 0 // visual row index for cursor mapping among agents (flat)
-	// We map cursor to flat result index m.cursor, so build a flat pointer list
-	flat := make([]int, len(m.results))
-	for i := range m.results {
-		flat[i] = i
+	return sessions, groups
+}
+
+// sideView is the desktop sidebar: a title, a rule, then one row per agent.
+func (m model) sideView() string {
+	line := "─"
+	if m.width > 0 {
+		line = strings.Repeat("─", m.width)
 	}
-	_ = idx
-	_ = flat
+	s := titleStyle.Render("tmuxrd") + "\n" + lineStyle.Render(line) + "\n"
+	sessions, groups := m.sessionGroups()
 	for _, sess := range sessions {
 		s += lipgloss.NewStyle().Bold(true).Render(sess) + "\n"
 		for _, gi := range groups[sess] {
@@ -277,12 +375,197 @@ func (m model) View() string {
 	return s
 }
 
+// stripView renders the mobile strip: a full-width row of agent chips, and a
+// second row describing the selected agent. It emits exactly m.height lines
+// (never more — a 2-row pane that scrolls destroys its own content), each
+// padded/truncated to the pane width.
+func (m model) stripView() string {
+	lines := []string{m.stripChips()}
+	if m.height >= 2 {
+		lines = append(lines, m.stripDetail())
+	}
+	h := m.height
+	if h <= 0 {
+		h = len(lines)
+	}
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for i := range lines {
+		lines[i] = fitLine(lines[i], m.width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// chipSpan is the visible column range [start,end) of one agent chip in the
+// strip's first row, so a click can be mapped back to an agent.
+type chipSpan struct {
+	index      int
+	start, end int
+}
+
+// stripChips is the first strip row: one chip per agent, the selected one
+// reversed, scrolled so the selection is always visible even when the agents do
+// not all fit across the pane.
+func (m model) stripChips() string {
+	s, _ := m.stripChipLayout()
+	return s
+}
+
+// stripChipLayout builds the chip row and, alongside it, the column span of
+// every visible chip. Both come from one layout pass, so what is drawn and what
+// a click hits can never disagree.
+func (m model) stripChipLayout() (string, []chipSpan) {
+	if len(m.results) == 0 {
+		return lineStyle.Render("no agents"), nil
+	}
+	sep := "  "
+	plain := make([]string, len(m.results))
+	for i, r := range m.results {
+		mark := " "
+		if i == m.cursor {
+			mark = ">"
+		}
+		plain[i] = fmt.Sprintf("%s%s %s", mark, statusCircle(r.State, m.spin.View()), r.Agent)
+	}
+
+	// Fit a contiguous run of chips around the selection. Reserve two columns
+	// for the ‹ › markers that signal clipped chips.
+	budget := m.width
+	if budget > 4 {
+		budget -= 2
+	}
+	sel := m.cursor
+	if sel < 0 {
+		sel = 0
+	}
+	if sel >= len(plain) {
+		sel = len(plain) - 1
+	}
+	used := ansi.StringWidth(plain[sel])
+	lo, hi := sel, sel
+	for budget > 0 && lo > 0 && used+len(sep)+ansi.StringWidth(plain[lo-1]) <= budget {
+		used += len(sep) + ansi.StringWidth(plain[lo-1])
+		lo--
+	}
+	for budget > 0 && hi < len(plain)-1 && used+len(sep)+ansi.StringWidth(plain[hi+1]) <= budget {
+		used += len(sep) + ansi.StringWidth(plain[hi+1])
+		hi++
+	}
+
+	var b strings.Builder
+	spans := make([]chipSpan, 0, hi-lo+1)
+	x := 0
+	if lo > 0 {
+		lead := lineStyle.Render("‹ ")
+		b.WriteString(lead)
+		x += ansi.StringWidth(lead)
+	}
+	for i := lo; i <= hi; i++ {
+		if i > lo {
+			b.WriteString(sep)
+			x += len(sep)
+		}
+		start := x
+		if i == m.cursor {
+			b.WriteString(selStyle.Render(plain[i]))
+		} else {
+			b.WriteString(plain[i])
+		}
+		x += ansi.StringWidth(plain[i])
+		spans = append(spans, chipSpan{index: i, start: start, end: x})
+	}
+	if hi < len(plain)-1 {
+		b.WriteString(lineStyle.Render(" ›"))
+	}
+	return b.String(), spans
+}
+
+// stripChipAt returns the agent whose chip covers column x of the first strip
+// row.
+func (m model) stripChipAt(x int) (int, bool) {
+	_, spans := m.stripChipLayout()
+	for _, s := range spans {
+		if x >= s.start && x < s.end {
+			return s.index, true
+		}
+	}
+	return 0, false
+}
+
+// stripDetail is the second strip row: the selected agent's session, path,
+// state and timer — or a one-line census when no agent is selected.
+func (m model) stripDetail() string {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		counts := map[detect.State]int{}
+		for _, r := range m.results {
+			counts[r.State]++
+		}
+		parts := []string{fmt.Sprintf("%d agents", len(m.results))}
+		if n := counts[detect.Working]; n > 0 {
+			parts = append(parts, fmt.Sprintf("⠴%d", n))
+		}
+		if n := counts[detect.Blocked]; n > 0 {
+			parts = append(parts, fmt.Sprintf("?%d", n))
+		}
+		if n := counts[detect.Idle]; n > 0 {
+			parts = append(parts, fmt.Sprintf("○%d", n))
+		}
+		return lineStyle.Render(strings.Join(parts, "  "))
+	}
+	r := m.results[m.cursor]
+	name := r.Agent
+	if r.WindowName != "" && r.WindowName != r.Agent {
+		name = r.WindowName + " (" + r.Agent + ")"
+	}
+	parts := []string{name, r.Session + ":" + r.Window}
+	if p := baseName(r.Path); p != "" {
+		parts = append(parts, p)
+	}
+	parts = append(parts, string(r.State))
+	if t := workedLabel(r); t != "" {
+		parts = append(parts, t)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// baseName renders a path the compact way the strip wants: the last element
+// with a trailing slash, so directories stay recognisable.
+func baseName(p string) string {
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		return ""
+	}
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[i+1:] + "/"
+	}
+	return p + "/"
+}
+
+// fitLine truncates a styled line to width visible cells (ellipsised) and pads
+// it back out to exactly width, so a strip row never wraps.
+func fitLine(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	if ansi.StringWidth(s) > width {
+		s = ansi.Truncate(s, width, "…")
+	}
+	if w := ansi.StringWidth(s); w < width {
+		s += strings.Repeat(" ", width-w)
+	}
+	return s
+}
+
 // version is stamped at build time: -ldflags "-X main.version=v1.2.3".
 var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: tmuxrd client|daemon|notify|summary|version")
+		fmt.Println("usage: tmuxrd client|daemon|notify|summary|adapt|version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -298,6 +581,8 @@ func main() {
 		fmt.Printf("agents=%d idle=%d working=%d blocked=%d\n", len(results), c[detect.Idle], c[detect.Working], c[detect.Blocked])
 	case "daemon":
 		cmdDaemon()
+	case "adapt":
+		cmdAdapt()
 	case "notify":
 		cmdNotify()
 	case "client", "run":

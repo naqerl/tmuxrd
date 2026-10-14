@@ -40,6 +40,9 @@ type sc struct {
 	spinnerFramesSeen map[string]bool
 	// subject is the agent the sampling/glyph steps talk about.
 	subject string
+	// lastSidebarPane is a pane id remembered by a step so a later step can
+	// prove the layout pass left it alone (no churn).
+	lastSidebarPane string
 }
 
 func keys(m map[string]bool) []string {
@@ -239,6 +242,13 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		// listener. We just assert it does not error out the scenario.
 		cur.env.StartDaemon()
 		return nil
+	})
+	s.Step(`^I restart the daemon$`, func(ctx context.Context) error {
+		// Simulates an upgrade/crash: the daemon the sidebar clients are
+		// connected to goes away and a fresh one takes its place.
+		cur.env.StopDaemon()
+		time.Sleep(300 * time.Millisecond)
+		return cur.env.StartDaemon()
 	})
 	s.Step(`^a new window is created in session "([^"]*)"$`, func(ctx context.Context, sess string) error {
 		return cur.env.NewWindow(sess, "plain", "")
@@ -736,6 +746,169 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		}
 		return nil
 	})
+
+	// --- mobile layout ---------------------------------------------------
+	s.Step(`^I resize window "([^"]*)" in session "([^"]*)" to (\d+)x(\d+)$`, func(ctx context.Context, win, sess string, w, h int) error {
+		return cur.env.ResizeWindow(sess, win, w, h)
+	})
+	s.Step(`^I adapt the sidebar layout$`, func(ctx context.Context) error {
+		_, err := cur.env.Adapt(false)
+		return err
+	})
+	s.Step(`^window "([^"]*)" of session "([^"]*)" should have a (strip|side) sidebar$`, func(ctx context.Context, win, sess, shape string) error {
+		return eventually(3*time.Second, func() error {
+			id, err := cur.env.SidebarInWindow(sess, win)
+			if err != nil {
+				return err
+			}
+			if id == "" {
+				return fmt.Errorf("window %s:%s has no sidebar", sess, win)
+			}
+			if got := cur.env.WindowLayout(sess, win); got != shape {
+				return fmt.Errorf("window %s:%s layout is %q, want %q", sess, win, got, shape)
+			}
+			return nil
+		})
+	})
+	s.Step(`^the sidebar of window "([^"]*)" in session "([^"]*)" should be (\d+) rows tall$`, func(ctx context.Context, win, sess string, rows int) error {
+		return eventually(3*time.Second, func() error {
+			id, err := cur.env.SidebarInWindow(sess, win)
+			if err != nil || id == "" {
+				return fmt.Errorf("no sidebar in %s:%s (%v)", sess, win, err)
+			}
+			_, _, _, h, err := cur.env.PaneGeometry(id)
+			if err != nil {
+				return err
+			}
+			if h != rows {
+				return fmt.Errorf("sidebar of %s:%s is %d rows, want %d", sess, win, h, rows)
+			}
+			return nil
+		})
+	})
+	s.Step(`^the sidebar of window "([^"]*)" in session "([^"]*)" should be (\d+) columns wide$`, func(ctx context.Context, win, sess string, cols int) error {
+		return eventually(3*time.Second, func() error {
+			id, err := cur.env.SidebarInWindow(sess, win)
+			if err != nil || id == "" {
+				return fmt.Errorf("no sidebar in %s:%s (%v)", sess, win, err)
+			}
+			_, _, w, _, err := cur.env.PaneGeometry(id)
+			if err != nil {
+				return err
+			}
+			if w != cols {
+				return fmt.Errorf("sidebar of %s:%s is %d columns, want %d", sess, win, w, cols)
+			}
+			return nil
+		})
+	})
+	s.Step(`^the sidebar of window "([^"]*)" in session "([^"]*)" should span the window width$`, func(ctx context.Context, win, sess string) error {
+		return eventually(3*time.Second, func() error {
+			id, err := cur.env.SidebarInWindow(sess, win)
+			if err != nil || id == "" {
+				return fmt.Errorf("no sidebar in %s:%s (%v)", sess, win, err)
+			}
+			_, top, pw, _, err := cur.env.PaneGeometry(id)
+			if err != nil {
+				return err
+			}
+			ww, _, err := cur.env.WindowGeometry(sess, win)
+			if err != nil {
+				return err
+			}
+			if pw != ww {
+				return fmt.Errorf("sidebar of %s:%s is %d wide, window is %d", sess, win, pw, ww)
+			}
+			if top != 0 {
+				return fmt.Errorf("sidebar of %s:%s starts at row %d, want the top", sess, win, top)
+			}
+			return nil
+		})
+	})
+	s.Step(`^the sidebar of window "([^"]*)" in session "([^"]*)" should show exactly (\d+) lines$`, func(ctx context.Context, win, sess string, want int) error {
+		return eventually(3*time.Second, func() error {
+			content, err := cur.env.SidebarContentIn(sess, win)
+			if err != nil {
+				return err
+			}
+			lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+			if len(lines) != want {
+				return fmt.Errorf("sidebar of %s:%s has %d lines, want %d:\n%s", sess, win, len(lines), want, content)
+			}
+			return nil
+		})
+	})
+	s.Step(`^the sidebar of window "([^"]*)" in session "([^"]*)" should mention "([^"]*)"$`, func(ctx context.Context, win, sess, text string) error {
+		return eventually(3*time.Second, func() error {
+			content, err := cur.env.SidebarContentIn(sess, win)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(content, text) {
+				return fmt.Errorf("sidebar of %s:%s does not mention %q:\n%s", sess, win, text, content)
+			}
+			return nil
+		})
+	})
+	s.Step(`^I remember the sidebar pane of window "([^"]*)" in session "([^"]*)"$`, func(ctx context.Context, win, sess string) error {
+		id, err := cur.env.SidebarInWindow(sess, win)
+		if err != nil {
+			return err
+		}
+		if id == "" {
+			return fmt.Errorf("no sidebar in %s:%s", sess, win)
+		}
+		cur.lastSidebarPane = id
+		return nil
+	})
+	s.Step(`^the sidebar pane of window "([^"]*)" in session "([^"]*)" should be unchanged$`, func(ctx context.Context, win, sess string) error {
+		id, err := cur.env.SidebarInWindow(sess, win)
+		if err != nil {
+			return err
+		}
+		if id != cur.lastSidebarPane {
+			return fmt.Errorf("sidebar of %s:%s is now %q, was %q (the layout pass churned)", sess, win, id, cur.lastSidebarPane)
+		}
+		return nil
+	})
+	s.Step(`^I press the "([^"]*)" key in the sidebar of window "([^"]*)" in session "([^"]*)"$`, func(ctx context.Context, key, win, sess string) error {
+		id, err := cur.env.SidebarInWindow(sess, win)
+		if err != nil || id == "" {
+			return fmt.Errorf("no sidebar in %s:%s (%v)", sess, win, err)
+		}
+		if err := cur.env.SendKeys(id, key); err != nil {
+			return err
+		}
+		time.Sleep(400 * time.Millisecond)
+		return nil
+	})
+	s.Step(`^window "([^"]*)" of session "([^"]*)" should have its sidebar pane focused$`, func(ctx context.Context, win, sess string) error {
+		return eventually(2*time.Second, func() error {
+			sbID, err := cur.env.SidebarInWindow(sess, win)
+			if err != nil || sbID == "" {
+				return fmt.Errorf("no sidebar in %s:%s (%v)", sess, win, err)
+			}
+			active, err := cur.env.Server.Run("display-message", "-p", "-t", sess+":"+win, "#{pane_id}")
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(active) != sbID {
+				return fmt.Errorf("active pane of %s:%s is %q, want the sidebar %q", sess, win, strings.TrimSpace(active), sbID)
+			}
+			return nil
+		})
+	})
+	s.Step(`^I click cell "(\d+),(\d+)" in the sidebar of window "([^"]*)" in session "([^"]*)"$`, func(ctx context.Context, x, y int, win, sess string) error {
+		id, err := cur.env.SidebarInWindow(sess, win)
+		if err != nil || id == "" {
+			return fmt.Errorf("no sidebar in %s:%s (%v)", sess, win, err)
+		}
+		if err := cur.env.ClickPane(id, x, y); err != nil {
+			return err
+		}
+		time.Sleep(400 * time.Millisecond)
+		return nil
+	})
 }
 
 // sidebarAgentLine returns the sidebar's rendered line for one agent. Rows
@@ -762,13 +935,19 @@ var testingT *testing.T
 
 func TestGodog(t *testing.T) {
 	testingT = t
+	// GODOG_TAGS narrows a development run (e.g. GODOG_TAGS=@mobile); the full
+	// suite ignores it and skips only @wip scenarios.
+	tags := "~@wip"
+	if v := os.Getenv("GODOG_TAGS"); v != "" {
+		tags = v
+	}
 	suite := godog.TestSuite{
 		ScenarioInitializer: InitializeScenario,
 		Options: &godog.Options{
 			Format:   "pretty",
 			Paths:    []string{"features"},
 			TestingT: t,
-			Tags:     "~@wip",
+			Tags:     tags,
 			Strict:   true,
 		},
 	}

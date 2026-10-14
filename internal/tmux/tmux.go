@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -126,9 +127,24 @@ type Pane struct {
 	Session    string
 	Window     string
 	WindowName string
+
+	// Geometry. Window* is the window this pane lives in (shared by every pane
+	// of that window); Width/Height is the pane itself. The layout pass reads
+	// these to choose a sidebar shape without any extra tmux round-trip.
+	WindowWidth  int
+	WindowHeight int
+	WindowZoomed bool
+	Width        int
+	Height       int
+
+	// Sidebar is true for a pane tmuxrd owns (@tmuxrd_sidebar=1), and Layout is
+	// that window's recorded shape (@tmuxrd_layout: "side"/"strip", empty when
+	// the option was never set).
+	Sidebar bool
+	Layout  string
 }
 
-const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}"
+const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}"
 
 // ListPanes enumerates every pane on every window of every session.
 func (s Server) ListPanes() ([]Pane, error) {
@@ -142,15 +158,28 @@ func (s Server) ListPanes() ([]Pane, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 7 {
+		if len(fields) < 14 {
 			continue
 		}
 		panes = append(panes, Pane{
 			Session: fields[0], Window: fields[1], WindowName: fields[2],
 			ID: fields[3], PID: fields[4], Cmd: fields[5], Path: fields[6],
+			Width:        atoi(fields[7]),
+			Height:       atoi(fields[8]),
+			WindowWidth:  atoi(fields[9]),
+			WindowHeight: atoi(fields[10]),
+			WindowZoomed: fields[11] == "1",
+			Sidebar:      strings.TrimSpace(fields[12]) == "1",
+			Layout:       strings.TrimSpace(fields[13]),
 		})
 	}
 	return panes, nil
+}
+
+// atoi parses a tmux numeric format, defaulting to 0 on anything unexpected.
+func atoi(s string) int {
+	n, _ := strconv.Atoi(strings.TrimSpace(s))
+	return n
 }
 
 // Capture returns the visible contents of a pane (no scrollback).
@@ -223,6 +252,61 @@ func (s Server) FocusPane(paneID string) { s.SelectPane(paneID) }
 
 // Option sets a global option.
 func (s Server) Option(name, value string) { s.Run("set-option", "-gq", name, value) }
+
+// SplitPane creates a pane in target, split along axis ("h" = side by side,
+// "v" = stacked), placed before (left of / above) the target, detached so
+// focus does not move, sized in cells (columns for "h", rows for "v"), running
+// command. It returns the new pane id.
+func (s Server) SplitPane(target, axis string, size int, command string) (string, error) {
+	dir := "-h"
+	if axis == "v" {
+		dir = "-v"
+	}
+	out, err := s.Run("split-window", dir, "-b", "-d", "-t", target, "-l", strconv.Itoa(size), "-P", "-F", "#{pane_id}", command)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// KillPane closes a pane.
+func (s Server) KillPane(paneID string) { s.Run("kill-pane", "-t", paneID) }
+
+// ResizePane resizes a pane along one axis: "v" sets its height in rows (-y),
+// "h" its width in columns (-x). tmux clamps to what the window can fit.
+func (s Server) ResizePane(paneID, axis string, n int) {
+	if axis == "v" {
+		s.Run("resize-pane", "-t", paneID, "-y", strconv.Itoa(n))
+		return
+	}
+	s.Run("resize-pane", "-t", paneID, "-x", strconv.Itoa(n))
+}
+
+// SetPaneOption sets an option on one pane (the sidebar tag).
+func (s Server) SetPaneOption(paneID, name, value string) {
+	s.Run("set-option", "-p", "-t", paneID, name, value)
+}
+
+// SetWindowOption sets an option on one window (the recorded sidebar shape).
+func (s Server) SetWindowOption(target, name, value string) {
+	s.Run("set-option", "-w", "-t", target, name, value)
+}
+
+// WindowHasSidebar reports whether a window already holds a tmuxrd sidebar.
+// Used as a last-instant re-check before creating one, since two callers can
+// both decide a window is missing its sidebar.
+func (s Server) WindowHasSidebar(target string) bool {
+	out, err := s.Run("list-panes", "-t", target, "-F", "#{@tmuxrd_sidebar}")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "1" {
+			return true
+		}
+	}
+	return false
+}
 
 // ShowOption reads a global option's value (trimmed).
 func (s Server) ShowOption(name string) string {
