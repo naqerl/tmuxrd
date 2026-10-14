@@ -27,7 +27,7 @@ type Result struct {
 	WindowName string
 }
 
-var agents = []string{"pi", "claude", "codex", "opencode", "cursor", "kimi", "hermes", "gemini"}
+var agents = []string{"pi", "claude", "codex", "opencode", "cursor", "kimi", "hermes", "gemini", "grok"}
 
 func isAgentCmd(cmd string) string {
 	for _, a := range agents {
