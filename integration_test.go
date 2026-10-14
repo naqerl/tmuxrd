@@ -51,19 +51,19 @@ func TestIntegrationOrphanCleanup(t *testing.T) {
 	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(800 * time.Millisecond)
 
-	main, _ := tmux.Run("list-panes", "-t", "t", "-F", "#{pane_id} #{@terdr_sidebar}")
-	t.Logf("panes before kill: %q", main)
+	got, _ := tmux.Run("list-panes", "-t", "t", "-F", "#{pane_id} #{@terdr_sidebar}")
 	mainPane := ""
-	for _, line := range splitLines(main) {
+	for _, line := range splitLines(got) {
 		fields := splitSpaces(line)
-		if len(fields) >= 1 {
-			mark := ""
-			if len(fields) > 1 {
-				mark = fields[1]
-			}
-			if mark != "1" {
-				mainPane = fields[0]
-			}
+		if len(fields) == 0 {
+			continue
+		}
+		mark := ""
+		if len(fields) > 1 {
+			mark = fields[1]
+		}
+		if mark != "1" {
+			mainPane = fields[0]
 		}
 	}
 	if mainPane == "" {
@@ -71,11 +71,7 @@ func TestIntegrationOrphanCleanup(t *testing.T) {
 	}
 
 	tmux.Run("kill-pane", "-t", mainPane)
-	time.Sleep(700 * time.Millisecond)
-	tmux.Run("run-shell", "/home/user/terdr/scripts/cleanup_orphans.sh >/dev/null 2>&1")
-	time.Sleep(300 * time.Millisecond)
-	got2, err2 := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}")
-	t.Logf("after kill: panes=%q err=%v", got2, err2)
+	time.Sleep(800 * time.Millisecond)
 
 	if _, err := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}"); err == nil {
 		t.Fatal("expected sidebar orphan cleanup to close the window/server")
