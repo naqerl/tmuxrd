@@ -55,9 +55,18 @@ func initSocketPath(srv tmux.Server) {
 func cmdDaemon() {
 	srv := tmux.NewServerFromEnv()
 	initSocketPath(srv)
-	// singleton guard
-	if conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond); err == nil {
-		conn.Close()
+	// Singleton guard: an exclusive lock file, not a dial of the socket. Two
+	// starts can both fail to dial before either has bound, and then both would
+	// remove the socket and listen — leaving two daemons scanning and pushing.
+	// flock makes "only one daemon per socket" atomic.
+	lockPath := socketPath + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		fmt.Println("daemon lock:", err)
+		os.Exit(1)
+	}
+	defer lockFile.Close()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		fmt.Println("tmuxrd daemon already running")
 		return
 	}
