@@ -1,0 +1,555 @@
+// Package tmuxenv provides the Go abstraction used by the godog feature suite
+// to drive a tmux server. Everything it does goes through tmux.Server, which
+// always passes an explicit -L socket, so a scenario can never address the
+// default (live) tmux server.
+package tmuxenv
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/naqerl/tmuxrd/internal/detect"
+	"github.com/naqerl/tmuxrd/internal/tmux"
+)
+
+// Env owns one isolated tmux server for the lifetime of a scenario.
+type Env struct {
+	Server       tmux.Server
+	Socket       string
+	BinDir       string // fake agent commands (pi, claude, ...) live here
+	Bin          string // absolute path to the tmuxrd binary
+	Scripts      string // absolute path to the scripts/ dir
+	Config       string // absolute path to tmuxrd.tmux
+	Daemon       int    // pid of the daemon we started, 0 if none
+	fakeName     string
+	envPublished bool
+}
+
+// fakeagent states accepted by NewSession/NewWindow. An empty state means
+// "render the idle banner".
+const (
+	StateIdle    = "idle"
+	StateWorking = "working"
+	StateBlocked = "blocked"
+	StateUnknown = "unknown"
+)
+
+// New starts a fresh tmux server on an isolated socket and prepares a directory
+// of fake agent executables. socket must be a unique, non-default name.
+func New(socket string, repoRoot string) (*Env, error) {
+	if socket == "" || socket == tmux.DefaultSocket {
+		return nil, fmt.Errorf("refusing non-isolated socket %q", socket)
+	}
+	e := &Env{
+		Server:  tmux.NewServer(socket),
+		Socket:  socket,
+		BinDir:  mustTempDir("tmuxrd-fakebin-"),
+		Bin:     filepath.Join(repoRoot, "bin", "tmuxrd"),
+		Scripts: filepath.Join(repoRoot, "scripts"),
+		Config:  filepath.Join(repoRoot, "tmuxrd.tmux"),
+	}
+	fakeAgentSrc = filepath.Join(repoRoot, "cmd", "fakeagent", "fakeagent")
+	if _, err := os.Stat(fakeAgentSrc); err != nil {
+		return nil, fmt.Errorf("fakeagent binary missing (run go build ./cmd/fakeagent): %w", err)
+	}
+	e.Server.KillServer() // clear any leftover on this socket
+	// A kill-server exits asynchronously; wait for the socket to actually go
+	// away or the first new-session races the dying server and lands in it
+	// (leaving a live server behind for the next scenario to collide with).
+	for i := 0; i < 100 && e.Server.HasServer(); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	e.envPublished = false
+	for _, a := range []string{"pi", "claude", "codex", "opencode", "cursor", "kimi", "hermes", "gemini", "grok", "bash"} {
+		if err := e.writeFake(a); err != nil {
+			return nil, err
+		}
+	}
+	// Sidebar panes run `tmuxrd client`, which resolves the daemon socket from
+	// TERDR_TMUX_SOCKET + XDG_RUNTIME_DIR. Panes inherit these from the *server*,
+	// not from this process, so they are published into the server's global env
+	// as soon as the server exists (see ensureClientEnv).
+	// Sidebar panes run `tmuxrd client`, which exits immediately (taking the
+	// pane with it) unless a daemon is listening. Start one so scenarios that
+	// create sidebar panes exercise a live client.
+	if err := e.StartDaemon(); err != nil {
+		e.Server.KillServer()
+		os.RemoveAll(e.BinDir)
+		return nil, fmt.Errorf("start daemon: %w", err)
+	}
+	return e, nil
+}
+
+// Close tears the server down and stops any daemon this Env started.
+func (e *Env) Close() {
+	e.StopDaemon()
+	e.Server.KillServer()
+	for i := 0; i < 100 && e.Server.HasServer(); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	os.Remove(filepath.Join(os.TempDir(), "tmux-1000", e.Socket))
+	os.RemoveAll(e.BinDir)
+}
+
+// fakeAgentSrc is the prebuilt binary that impersonates an agent. Each agent
+// name gets its own *copy* (not symlink) so /proc/<pid>/comm and tmux's
+// pane_current_command both report the agent name.
+var fakeAgentSrc string
+
+func (e *Env) writeFake(name string) error {
+	if fakeAgentSrc == "" {
+		return fmt.Errorf("fakeAgentSrc not initialised")
+	}
+	data, err := os.ReadFile(fakeAgentSrc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(e.BinDir, name), data, 0o755)
+}
+
+// PATH returns the fake-bin-augmented PATH for child processes.
+func (e *Env) PATH() string { return e.BinDir + ":" + os.Getenv("PATH") }
+
+// run executes a tmux command with PATH set to see the fake agents.
+func (e *Env) run(args ...string) (string, error) {
+	cmd := exec.Command("tmux", append([]string{"-L", e.Socket}, args...)...)
+	cmd.Env = append(os.Environ(), "PATH="+e.PATH())
+	out, err := cmd.CombinedOutput()
+	return strings.TrimRight(string(out), "\n"), err
+}
+
+// cmd resolves an agent name to an executable path and builds the pane
+// command. The sentinel "plain" yields a non-agent command (a bare sleep) so
+// detection must ignore it. Every fake agent also gets its own state file
+// (<BinDir>/<agent>.state, pre-seeded with state) and is launched with
+// -state-file so SetAgentState can flip a running pane's state in place.
+func (e *Env) cmd(agent, state string) (string, error) {
+	if state == "" {
+		state = StateIdle
+	}
+	if agent == "plain" {
+		return "/bin/sleep 3600", nil
+	}
+	path := e.StateFile(agent)
+	if err := os.WriteFile(path, []byte(state), 0o644); err != nil {
+		return "", fmt.Errorf("write state file %s: %w", path, err)
+	}
+	return fmt.Sprintf("%s -state-file %s", filepath.Join(e.BinDir, agent), path), nil
+}
+
+// StateFile is the one-per-agent state file SetAgentState rewrites and the
+// matching fakeagent re-reads while running. One running pane -> one file.
+func (e *Env) StateFile(agent string) string {
+	return filepath.Join(e.BinDir, agent+".state")
+}
+
+// SetAgentState switches an already-running agent's state without touching
+// the pane: it overwrites the agent's state file, whose path was baked into
+// the pane command as -state-file. The fakeagent polls the file (~250ms) and
+// reprints its banner when the content changes.
+func (e *Env) SetAgentState(sess, win, state string) error {
+	if state == "" {
+		state = StateIdle
+	}
+	// resolve the agent name from the pane's current command (read every pane
+	// in the window: tmux expands -t to the *active* pane, which may be the
+	// sidebar client rather than the agent pane)
+	out, err := e.run("list-panes", "-t", sess+":"+win, "-F",
+		"#{pane_current_command}\t#{@tmuxrd_sidebar}\t#{pane_active}")
+	if err != nil {
+		return fmt.Errorf("list-panes %s:%s: %v: %s", sess, win, err, out)
+	}
+	agent := ""
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) < 2 || strings.TrimSpace(f[0]) == "" {
+			continue
+		}
+		if strings.TrimSpace(f[1]) == "1" {
+			continue // sidebar pane
+		}
+		agent = strings.TrimSpace(f[0])
+		if len(f) < 3 || strings.TrimSpace(f[2]) == "1" {
+			break // prefer the active (non-sidebar) pane
+		}
+	}
+	if agent == "" {
+		return fmt.Errorf("no pane in %s:%s", sess, win)
+	}
+	if _, err := os.Stat(filepath.Join(e.BinDir, agent)); err != nil {
+		return fmt.Errorf("%s:%s is not a fake agent pane (command %q)", sess, win, agent)
+	}
+	if err := os.WriteFile(e.StateFile(agent), []byte(state), 0o644); err != nil {
+		return err
+	}
+	// The daemon re-detects on a 500ms tick; push a notify so the sidebar
+	// redraws with the new state immediately instead of up to a tick later.
+	e.RunBin("notify")
+	return nil
+}
+
+// NewSession creates a detached session running a fake agent in the given
+// state ("" = idle banner).
+func (e *Env) NewSession(name, agent, state string) error {
+	if err := e.ensureClientEnv(); err != nil {
+		return err
+	}
+	cmd, err := e.cmd(agent, state)
+	if err != nil {
+		return err
+	}
+	out, err := e.run("new-session", "-d", "-s", name, cmd)
+	if err != nil {
+		return fmt.Errorf("new-session %s (%s): %v: %s", name, cmd, err, out)
+	}
+	return nil
+}
+
+// NewWindow adds a window to session running a fake agent in the given state
+// ("" = idle banner).
+// NOTE: -t sess: (with the trailing colon) — without it tmux resolves -t to a
+// window index and fails with "index 0 in use".
+func (e *Env) NewWindow(sess, agent, state string) error {
+	if err := e.ensureClientEnv(); err != nil {
+		return err
+	}
+	cmd, err := e.cmd(agent, state)
+	if err != nil {
+		return err
+	}
+	out, err := e.run("new-window", "-t", sess+":", cmd)
+	if err != nil {
+		return fmt.Errorf("new-window %s: (%s): %v: %s", sess, cmd, err, out)
+	}
+	return nil
+}
+
+// SourceConfig loads tmuxrd.tmux (daemon start + hooks + status line).
+func (e *Env) SourceConfig() error {
+	cmd := exec.Command("tmux", "-L", e.Socket, "source-file", e.Config)
+	cmd.Env = append(os.Environ(),
+		"PATH="+e.PATH(),
+		"TERDR_TMUX_SOCKET="+e.Socket,
+		"XDG_RUNTIME_DIR="+e.runtimeDir(),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("source-file: %v: %s", err, out)
+	}
+	return nil
+}
+
+func (e *Env) RuntimeDir() string {
+	return e.runtimeDir()
+}
+
+// ensureClientEnv publishes the daemon socket location into the server's global
+// env so every pane can find it.
+func (e *Env) ensureClientEnv() error {
+	if e.envPublished {
+		return nil
+	}
+	if !e.Server.HasServer() {
+		return nil // no server yet; retried on the next call
+	}
+	rt := e.runtimeDir()
+	for _, kv := range [][2]string{
+		{tmux.EnvVar, e.Socket},
+		{"XDG_RUNTIME_DIR", rt},
+	} {
+		if _, err := e.Server.Run("set-environment", "-g", kv[0], kv[1]); err != nil {
+			return fmt.Errorf("set-environment %s: %w", kv[0], err)
+		}
+	}
+	e.envPublished = true
+	return nil
+}
+
+func (e *Env) runtimeDir() string {
+	d := filepath.Join(os.TempDir(), "tmuxrd-rt-"+e.Socket)
+	os.MkdirAll(d, 0o700)
+	return d
+}
+
+// runScript runs one of the shell helpers against this server with the right
+// TERDR_TMUX_SOCKET so it operates on our socket only.
+func (e *Env) runScript(name string) error {
+	cmd := exec.Command("bash", filepath.Join(e.Scripts, name))
+	cmd.Env = append(os.Environ(),
+		"PATH="+e.PATH(),
+		"TERDR_TMUX_SOCKET="+e.Socket,
+		"XDG_RUNTIME_DIR="+e.runtimeDir(),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %v: %s", name, err, out)
+	}
+	return nil
+}
+
+// ToggleSidebar flips sidebar visibility exactly like the prefix-b binding.
+func (e *Env) ToggleSidebar() error {
+	if err := e.ensureClientEnv(); err != nil {
+		return err
+	}
+	return e.runScript("toggle_sidebar.sh")
+}
+
+// EnsureSidebar is the after-new-window/after-new-session hook handler.
+func (e *Env) EnsureSidebar() error {
+	if err := e.ensureClientEnv(); err != nil {
+		return err
+	}
+	return e.runScript("ensure_sidebar.sh")
+}
+
+// CleanupOrphans is the pane-exited/after-kill-pane hook handler.
+func (e *Env) CleanupOrphans() error { return e.runScript("cleanup_orphans.sh") }
+
+// RunBin invokes the tmuxrd binary (summary/client) against this server.
+func (e *Env) RunBin(args ...string) (string, error) {
+	cmd := exec.Command(e.Bin, args...)
+	cmd.Env = append(os.Environ(),
+		"PATH="+e.PATH(),
+		"TERDR_TMUX_SOCKET="+e.Socket,
+		"XDG_RUNTIME_DIR="+e.runtimeDir(),
+	)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimRight(string(out), "\n"), err
+}
+
+// StartDaemon launches the tmuxrd daemon for this server in the background.
+func (e *Env) StartDaemon() error {
+	cmd := exec.Command(e.Bin, "daemon")
+	cmd.Env = append(os.Environ(),
+		"PATH="+e.PATH(),
+		"TERDR_TMUX_SOCKET="+e.Socket,
+		"XDG_RUNTIME_DIR="+e.runtimeDir(),
+	)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	e.Daemon = cmd.Process.Pid
+	go cmd.Wait() // reap
+	// wait for the socket to appear
+	sock := filepath.Join(e.runtimeDir(), "tmuxrd-"+e.Socket+".sock")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sock); err == nil {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon socket %s never appeared", sock)
+}
+
+// StopDaemon kills the daemon started by StartDaemon.
+func (e *Env) StopDaemon() {
+	if e.Daemon != 0 {
+		if p, err := os.FindProcess(e.Daemon); err == nil {
+			p.Kill()
+		}
+		e.Daemon = 0
+	}
+}
+
+// SidebarPanes returns pane ids tagged @tmuxrd_sidebar=1.
+func (e *Env) SidebarPanes() ([]string, error) {
+	out, err := e.run("list-panes", "-a", "-F", "#{pane_id}\t#{@tmuxrd_sidebar}")
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) == 2 && strings.TrimSpace(f[1]) == "1" {
+			ids = append(ids, f[0])
+		}
+	}
+	return ids, nil
+}
+
+// MainPanes returns pane ids NOT tagged as a sidebar.
+func (e *Env) MainPanes() ([]string, error) {
+	all, err := e.run("list-panes", "-a", "-F", "#{pane_id}\t#{@tmuxrd_sidebar}")
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, l := range strings.Split(all, "\n") {
+		f := strings.Split(l, "\t")
+		if len(f) == 2 && strings.TrimSpace(f[1]) != "1" {
+			ids = append(ids, f[0])
+		}
+	}
+	return ids, nil
+}
+
+// Windows returns window indices of a session.
+func (e *Env) Windows(sess string) ([]string, error) {
+	out, err := e.run("list-windows", "-t", sess, "-F", "#{window_index}")
+	if err != nil {
+		return nil, err
+	}
+	return nonEmptyLines(out), nil
+}
+
+// WindowCount returns the total number of windows across all sessions.
+func (e *Env) WindowCount() (int, error) {
+	out, err := e.run("list-windows", "-a", "-F", "#{window_index}")
+	if err != nil {
+		return 0, err
+	}
+	return len(nonEmptyLines(out)), nil
+}
+
+// SessionNames returns all session names.
+func (e *Env) SessionNames() ([]string, error) {
+	out, err := e.run("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		return nil, err
+	}
+	return nonEmptyLines(out), nil
+}
+
+// ActiveSession returns the session that is current for the calling client.
+// For a headless (detached) test server this is the most recently used one.
+func (e *Env) ActiveSession() string {
+	out, _ := e.run("display-message", "-p", "#{session_name}")
+	return strings.TrimSpace(out)
+}
+
+// KillPane kills a pane by id (returns error output for assertions).
+func (e *Env) KillPane(id string) (string, error) {
+	return e.run("kill-pane", "-t", id)
+}
+
+// SelectWindow switches the current client to a window.
+func (e *Env) SelectWindow(target string) error {
+	_, err := e.run("select-window", "-t", target)
+	return err
+}
+
+// CurrentWindow returns the active window index of the given session.
+func (e *Env) CurrentWindow(sess string) (string, error) {
+	out, err := e.run("list-windows", "-t", sess, "-F",
+		"#{window_index} #{window_active}")
+	if err != nil {
+		return "", err
+	}
+	for _, l := range nonEmptyLines(out) {
+		f := strings.SplitN(l, " ", 2)
+		if len(f) == 2 && f[1] == "1" {
+			return f[0], nil
+		}
+	}
+	return "", nil
+}
+
+// CapturePane returns a pane's visible content.
+func (e *Env) CapturePane(id string) string { return e.Server.Capture(id) }
+
+// Detect runs the real detector against this server.
+func (e *Env) Detect() []detect.Result { return detect.Detect(e.Server) }
+
+// DetectBySession groups detector results by session name for assertions.
+func (e *Env) DetectBySession() map[string][]detect.Result {
+	out := map[string][]detect.Result{}
+	for _, r := range e.Detect() {
+		out[r.Session] = append(out[r.Session], r)
+	}
+	return out
+}
+
+// Summary runs `tmuxrd summary` and parses the counts.
+func (e *Env) Summary() (agents, idle, working, blocked int, err error) {
+	out, err := e.RunBin("summary")
+	if err != nil {
+		return
+	}
+	// agents=%d idle=%d working=%d blocked=%d
+	fmt.Sscanf(out, "agents=%d idle=%d working=%d blocked=%d",
+		&agents, &idle, &working, &blocked)
+	return
+}
+
+// SidebarContent reads the rendered sidebar by capturing the sidebar pane.
+func (e *Env) SidebarContent() (string, error) {
+	ids, err := e.SidebarPanes()
+	if err != nil {
+		return "", err
+	}
+	if len(ids) == 0 {
+		return "", fmt.Errorf("no sidebar pane")
+	}
+	return e.CapturePane(ids[0]), nil
+}
+
+// HasSelection reports whether the sidebar's first row shows the ">" marker
+// for the given window index (fast-switch assertion).
+func (e *Env) SidebarShowsSelection(window string) (bool, string, error) {
+	content, err := e.SidebarContent()
+	if err != nil {
+		return false, "", err
+	}
+	for _, l := range strings.Split(content, "\n") {
+		// A selected row is ">" and identifies its window as "<index>:".
+		if strings.Contains(l, ">") && strings.Contains(l, window+":") {
+			return true, content, nil
+		}
+	}
+	return false, content, nil
+}
+
+// AllSidebarConsistent reports whether every window that should have a sidebar
+// has exactly one, and no window has more than one (pane-consistency check).
+func (e *Env) AllSidebarConsistent() (bool, string, error) {
+	out, err := e.run("list-panes", "-a", "-F",
+		"#{session_name}:#{window_index}\t#{@tmuxrd_sidebar}")
+	if err != nil {
+		return false, "", err
+	}
+	per := map[string]int{}
+	for _, l := range strings.Split(out, "\n") {
+		if l == "" {
+			continue
+		}
+		f := strings.Split(l, "\t")
+		if len(f) != 2 {
+			continue
+		}
+		if strings.TrimSpace(f[1]) == "1" {
+			per[f[0]]++
+		}
+	}
+	for k, v := range per {
+		if v != 1 {
+			return false, fmt.Sprintf("window %s has %d sidebars", k, v), nil
+		}
+	}
+	return true, "", nil
+}
+
+func mustTempDir(prefix string) string {
+	d, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+
+func nonEmptyLines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}

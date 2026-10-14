@@ -29,7 +29,10 @@ type stateMsg struct {
 
 var socketPath string
 
-func initSocketPath() {
+// initSocketPath derives the daemon's Unix socket. It is namespaced by the tmux
+// socket name so that two different tmux servers each get their own daemon and
+// never collide on a single shared path.
+func initSocketPath(srv tmux.Server) {
 	if socketPath != "" {
 		return
 	}
@@ -37,11 +40,13 @@ func initSocketPath() {
 	if base == "" {
 		base = os.TempDir()
 	}
-	socketPath = filepath.Join(base, "tmuxrd.sock")
+	name := srv.SocketFile()
+	socketPath = filepath.Join(base, "tmuxrd-"+name+".sock")
 }
 
 func cmdDaemon() {
-	initSocketPath()
+	srv := tmux.NewServerFromEnv()
+	initSocketPath(srv)
 	// singleton guard
 	if conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond); err == nil {
 		conn.Close()
@@ -64,7 +69,7 @@ func cmdDaemon() {
 		state    []detect.Result
 	)
 	refresh := func() {
-		res := detect.Detect()
+		res := detect.Detect(srv)
 		mu.Lock()
 		state = res
 		snap := append([]detect.Result(nil), res...)
@@ -113,7 +118,7 @@ func cmdDaemon() {
 					case "notify":
 						go refresh()
 					case "focus":
-						tmux.FocusPane(m.Pane)
+						srv.FocusPane(m.Pane)
 					case "quit":
 						return
 					}
@@ -142,7 +147,8 @@ func cmdDaemon() {
 }
 
 func cmdNotify() {
-	initSocketPath()
+	srv := tmux.NewServerFromEnv()
+	initSocketPath(srv)
 	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
 	if err != nil {
 		return
@@ -154,7 +160,7 @@ func cmdNotify() {
 }
 
 func runClient() {
-	initSocketPath()
+	initSocketPath(tmux.NewServerFromEnv())
 	// connect
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
@@ -162,7 +168,7 @@ func runClient() {
 		fmt.Fprintln(os.Stderr, "daemon not available")
 		os.Exit(1)
 	}
-	m := model{}
+	m := newModel(tmux.NewServerFromEnv())
 	// reader goroutine sends states into a channel stored in model? We'll use tea.Msg via Cmd.
 	program := tea.NewProgram(m)
 	go func() {

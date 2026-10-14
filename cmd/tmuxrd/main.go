@@ -8,8 +8,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/naqerl/tmuxrd/internal/detect"
 	"github.com/naqerl/tmuxrd/internal/tmux"
@@ -18,10 +20,24 @@ import (
 type tickMsg time.Time
 type refreshMsg struct{}
 
+// stateInterval is how often the sidebar re-detects agent state; the working
+// spinner animates independently at spinner.MiniDot.FPS between refreshes.
+const (
+	stateInterval = 5 * time.Second
+)
+
 type model struct {
+	srv     tmux.Server
 	results []detect.Result
 	cursor  int
 	width   int
+	spin    spinner.Model
+}
+
+// newModel builds a client model with the working spinner ready to animate.
+func newModel(srv tmux.Server) model {
+	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	return model{srv: srv, spin: s}
 }
 
 func waitForSignal() tea.Msg {
@@ -33,14 +49,17 @@ func waitForSignal() tea.Msg {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Batch(
+		tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }),
+		m.spin.Tick,
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stateUIMsg:
 		m.results = msg.Results
-		if cp := tmux.CurrentPane(); cp != "" {
+		if cp := m.srv.CurrentPane(); cp != "" {
 			found := false
 			for i, r := range m.results {
 				if r.PaneID == cp {
@@ -54,8 +73,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tickMsg:
-		m.results = detect.Detect()
-		if cp := tmux.CurrentPane(); cp != "" {
+		m.results = detect.Detect(m.srv)
+		if cp := m.srv.CurrentPane(); cp != "" {
 			found := false
 			for i, r := range m.results {
 				if r.PaneID == cp {
@@ -71,7 +90,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.results) && len(m.results) > 0 {
 			m.cursor = len(m.results) - 1
 		}
-		return m, tea.Batch(tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
+		return m, tea.Batch(tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
+	case spinner.TickMsg:
+		// Advance only the spinner animation; never re-run detection here.
+		var cmd tea.Cmd
+		m.spin, cmd = m.spin.Update(msg)
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyMsg:
@@ -88,7 +112,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if len(m.results) > 0 && m.cursor < len(m.results) {
-				tmux.FocusPane(m.results[m.cursor].PaneID)
+				m.srv.FocusPane(m.results[m.cursor].PaneID)
 			}
 		}
 	}
@@ -107,17 +131,21 @@ var (
 	}
 )
 
-func statusCircle(s detect.State) string {
+func statusCircle(s detect.State, spinView string) string {
 	st := stateStyle[s]
-	circle := "●"
 	switch s {
-	case detect.Idle:
 	case detect.Working:
+		// Animated braille spinner (same family pi uses) for active work.
+		return st.Render(strings.TrimRight(spinView, " "))
 	case detect.Blocked:
-	case detect.Unknown:
-		circle = "○"
+		// The agent is waiting on the user.
+		return st.Render("?")
+	case detect.Idle, detect.Unknown:
+		// Stale / idle / unknown: a quiet empty circle.
+		return st.Render("○")
+	default:
+		return st.Render("○")
 	}
-	return st.Render(circle)
 }
 
 func abbreviatePath(pth string) string {
@@ -169,7 +197,7 @@ func (m model) View() string {
 				pth = parts[len(parts)-1]
 				if pth == "" { pth = "/" }
 			}
-			circle := statusCircle(r.State)
+			circle := statusCircle(r.State, m.spin.View())
 			mark := " "
 			if m.cursor >= 0 && gi == m.cursor {
 				mark = ">"
@@ -181,8 +209,10 @@ func (m model) View() string {
 			left := fmt.Sprintf("%s  %s  %s: %-12s", mark, circle, r.Window, label)
 			line := left + " " + pth
 			if m.width > 0 {
-				lw := len([]rune(left))
-				pw := len([]rune(pth))
+				// Measure *visible* width (ignore ANSI colour codes) so the styled
+				// glyph doesn't skew the right-hand path alignment.
+				lw := ansi.StringWidth(left)
+				pw := ansi.StringWidth(pth)
 				if lw+1+pw <= m.width {
 					line = left + strings.Repeat(" ", m.width-lw-pw) + pth
 				}
@@ -200,7 +230,8 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "summary":
-		results := detect.Detect()
+		srv := tmux.NewServerFromEnv()
+		results := detect.Detect(srv)
 		c := map[detect.State]int{}
 		for _, r := range results {
 			c[r.State]++

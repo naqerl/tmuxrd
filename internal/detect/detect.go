@@ -157,8 +157,8 @@ func fmtProc(pid int) string {
 	return "/proc/" + strconv.Itoa(pid)
 }
 
-func Detect() []Result {
-	panes, err := tmux.ListPanes()
+func Detect(s tmux.Server) []Result {
+	panes, err := s.ListPanes()
 	if err != nil {
 		return nil
 	}
@@ -174,7 +174,7 @@ func Detect() []Result {
 		if agent == "" {
 			continue
 		}
-		screen := tmux.Capture(p.ID)
+		screen := s.Capture(p.ID)
 		st := classifyTail(screen)
 		fc := foregroundCommand(p.PID)
 		if fc == "" || isShell(fc) {
