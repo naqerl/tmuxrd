@@ -1,4 +1,4 @@
-module github.com/naqerl/terdr
+module github.com/naqerl/tmuxrd
 
 go 1.26
 

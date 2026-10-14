@@ -13,8 +13,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/naqerl/terdr/internal/detect"
-	"github.com/naqerl/terdr/internal/tmux"
+	"github.com/naqerl/tmuxrd/internal/detect"
+	"github.com/naqerl/tmuxrd/internal/tmux"
 )
 
 type daemonMsg struct {
@@ -37,7 +37,7 @@ func initSocketPath() {
 	if base == "" {
 		base = os.TempDir()
 	}
-	socketPath = filepath.Join(base, "terdr.sock")
+	socketPath = filepath.Join(base, "tmuxrd.sock")
 }
 
 func cmdDaemon() {
@@ -45,7 +45,7 @@ func cmdDaemon() {
 	// singleton guard
 	if conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond); err == nil {
 		conn.Close()
-		fmt.Println("terdr daemon already running")
+		fmt.Println("tmuxrd daemon already running")
 		return
 	}
 	os.Remove(socketPath)

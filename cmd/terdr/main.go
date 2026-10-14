@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/naqerl/terdr/internal/detect"
-	"github.com/naqerl/terdr/internal/tmux"
+	"github.com/naqerl/tmuxrd/internal/detect"
+	"github.com/naqerl/tmuxrd/internal/tmux"
 )
 
 type tickMsg time.Time
@@ -141,7 +141,7 @@ func (m model) View() string {
 	if m.width > 0 {
 		line = strings.Repeat("─", m.width)
 	}
-	s := titleStyle.Render(" terdr") + "\n" + lineStyle.Render(line) + "\n"
+	s := titleStyle.Render(" tmuxrd") + "\n" + lineStyle.Render(line) + "\n"
 	// group agent results by session preserving order
 	sessions := []string{}
 	groups := map[string][]int{}
@@ -195,7 +195,7 @@ func (m model) View() string {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: terdr run|summary")
+		fmt.Println("usage: tmuxrd run|summary")
 		os.Exit(2)
 	}
 	switch os.Args[1] {

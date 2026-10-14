@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/naqerl/terdr/internal/tmux"
+	"github.com/naqerl/tmuxrd/internal/tmux"
 )
 
 type State string

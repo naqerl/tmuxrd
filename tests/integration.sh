@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SOCK="terdr-int"
-ROOT="/home/user/terdr"
-BIN="$ROOT/bin/terdr"
+SOCK="tmuxrd-int"
+ROOT="/home/user/tmuxrd"
+BIN="$ROOT/bin/tmuxrd"
 tmux -L "$SOCK" kill-server 2>/dev/null || true
 tmux -L "$SOCK" new-session -d -s t 'sleep 1000'
 tmux -L "$SOCK" new-window
-tmux -L "$SOCK" source-file "$ROOT/terdr.tmux"
+tmux -L "$SOCK" source-file "$ROOT/tmuxrd.tmux"
 sleep 0.3
 
 fail(){ echo "FAIL: $*"; tmux -L "$SOCK" kill-server; exit 1; }
-assert_panes(){ [ "$(tmux -L "$SOCK" list-panes -a -F '#{@terdr_sidebar}' | grep -c '^1$')" = "$1" ] || fail "expected $1 sidebar panes, got $(tmux -L "$SOCK" list-panes -a -F '#{@terdr_sidebar}' | grep -c '^1$')"; }
+assert_panes(){ [ "$(tmux -L "$SOCK" list-panes -a -F '#{@tmuxrd_sidebar}' | grep -c '^1$')" = "$1" ] || fail "expected $1 sidebar panes, got $(tmux -L "$SOCK" list-panes -a -F '#{@tmuxrd_sidebar}' | grep -c '^1$')"; }
 
 # toggle on -> every window gets one
 tmux -L "$SOCK" run-shell "$ROOT/scripts/toggle_sidebar.sh >/dev/null 2>&1"

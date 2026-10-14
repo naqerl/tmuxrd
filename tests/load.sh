@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-SOCK=terdr-load
-ROOT=/home/user/terdr
-BIN=$ROOT/bin/terdr
+SOCK=tmuxrd-load
+ROOT=/home/user/tmuxrd
+BIN=$ROOT/bin/tmuxrd
 tmux -L "$SOCK" kill-server 2>/dev/null || true
 mkdir -p /tmp/mockbin
 cp /bin/sleep /tmp/mockbin/pi
 tmux -L "$SOCK" new-session -d -s s0 'sleep 1000'
-tmux -L "$SOCK" source-file "$ROOT/terdr.tmux"
+tmux -L "$SOCK" source-file "$ROOT/tmuxrd.tmux"
 sleep .3
 PATH=/tmp/mockbin:$PATH \
   TERDR_TMUX_SOCKET=$SOCK \
-  /home/user/terdr/bin/terdr daemon >/tmp/terdr-load-daemon.log 2>&1 &
+  /home/user/tmuxrd/bin/tmuxrd daemon >/tmp/tmuxrd-load-daemon.log 2>&1 &
 daemon=$!
 sleep .5
 for sessions in 5 15; do
@@ -26,8 +26,8 @@ for sessions in 5 15; do
   for iter in 1 2; do
     /usr/bin/time -f "summary: %e s" env TERDR_TMUX_SOCKET=$SOCK $BIN summary >/dev/null
   done
-  echo "  daemon: $(ps -p $(cat $BIN 2>/dev/null >/dev/null; pgrep -f 'terdr daemon' | head -1) -o pmem=,pcpu=,rss= 2>/dev/null)"
-  echo "  top clients:"; pgrep -x terdr | while read pid; do
+  echo "  daemon: $(ps -p $(cat $BIN 2>/dev/null >/dev/null; pgrep -f 'tmuxrd daemon' | head -1) -o pmem=,pcpu=,rss= 2>/dev/null)"
+  echo "  top clients:"; pgrep -x tmuxrd | while read pid; do
     ps -p "$pid" -o pid,pmem,pcpu,rss,cmd | tail -n +2
   done | sort -k3 -rn | head -3
   echo
