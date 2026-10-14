@@ -50,6 +50,13 @@ func classifyTail(tail string) State {
 	if len(nz) > 6 {
 		nz = nz[len(nz)-6:]
 	}
+	// Strong idle: shell prompt visible at the end.
+	if len(nz) > 0 {
+		last := strings.TrimSpace(nz[len(nz)-1])
+		if strings.HasSuffix(last, "$ ") || strings.HasSuffix(last, "% ") || strings.HasSuffix(last, "# ") || strings.HasSuffix(last, ">") || strings.HasSuffix(last, "❯") {
+			return Idle
+		}
+	}
 	joined := strings.ToLower(strings.Join(nz, "\n"))
 	// blocked strict patterns
 	blockedPats := []string{
