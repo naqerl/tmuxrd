@@ -139,7 +139,11 @@ func (m model) View() string {
 			if m.cursor >= 0 && gi == m.cursor {
 				mark = ">"
 			}
-			line := fmt.Sprintf("%s  %s  %-8s %s", mark, circle, r.Agent, pth)
+			label := r.Agent
+			if r.WindowName != "" && r.WindowName != r.Agent {
+				label = r.WindowName + " (" + r.Agent + ")"
+			}
+			line := fmt.Sprintf("%s  %s  %-12s %s", mark, circle, label, pth)
 			s += line + "\n"
 		}
 	}

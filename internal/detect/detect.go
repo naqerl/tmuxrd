@@ -16,12 +16,13 @@ const (
 )
 
 type Result struct {
-	PaneID  string
-	Agent   string
-	State   State
-	Path    string
-	Session string
-	Window  string
+	PaneID     string
+	Agent      string
+	State      State
+	Path       string
+	Session    string
+	Window     string
+	WindowName string
 }
 
 var agents = []string{"pi", "claude", "codex", "opencode", "cursor", "kimi", "hermes", "gemini"}
@@ -94,7 +95,7 @@ func Detect() []Result {
 			continue
 		}
 		screen := tmux.Capture(p.ID)
-		out = append(out, Result{PaneID: p.ID, Agent: agent, State: classifyTail(screen), Path: p.Path, Session: p.Session, Window: p.Window})
+		out = append(out, Result{PaneID: p.ID, Agent: agent, State: classifyTail(screen), Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName})
 	}
 	return out
 }

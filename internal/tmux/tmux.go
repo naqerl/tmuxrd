@@ -7,12 +7,13 @@ import (
 )
 
 type Pane struct {
-	ID       string
-	PID      string
-	Cmd      string
-	Path     string
-	Session  string
-	Window   string
+	ID          string
+	PID         string
+	Cmd         string
+	Path        string
+	Session     string
+	Window      string
+	WindowName  string
 }
 
 func Run(args ...string) (string, error) {
@@ -26,7 +27,7 @@ func Run(args ...string) (string, error) {
 }
 
 func ListPanes() ([]Pane, error) {
-	out, err := Run("list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}")
+	out, err := Run("list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}")
 	if err != nil {
 		return nil, err
 	}
@@ -36,10 +37,10 @@ func ListPanes() ([]Pane, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 6 {
+		if len(fields) < 7 {
 			continue
 		}
-		panes = append(panes, Pane{ID: fields[2], PID: fields[3], Cmd: fields[4], Path: fields[5], Session: fields[0], Window: fields[1]})
+		panes = append(panes, Pane{ID: fields[3], PID: fields[4], Cmd: fields[5], Path: fields[6], Session: fields[0], Window: fields[1], WindowName: fields[2]})
 	}
 	return panes, nil
 }
