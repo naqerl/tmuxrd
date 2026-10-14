@@ -160,6 +160,10 @@ func cmdDaemon() {
 	}
 
 	// accept loop
+	// stop is signalled by the "quit" message, which `tmuxrd stop` sends: a
+	// precise way to shut down the daemon for one server (and how the installer
+	// restarts it) without pattern-killing every tmuxrd daemon on the machine.
+	stop := make(chan struct{}, 1)
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -188,6 +192,10 @@ func cmdDaemon() {
 					case "focus":
 						srv.FocusPane(m.Pane)
 					case "quit":
+						select {
+						case stop <- struct{}{}:
+						default:
+						}
 						return
 					}
 				}
@@ -225,6 +233,8 @@ func cmdDaemon() {
 			refresh()
 		case <-sig:
 			return
+		case <-stop:
+			return
 		}
 	}
 }
@@ -238,6 +248,24 @@ func cmdNotify() {
 	}
 	defer conn.Close()
 	b, _ := json.Marshal(daemonMsg{Cmd: "notify"})
+	b = append(b, '\n')
+	conn.Write(b)
+}
+
+// cmdStop asks the daemon for this server to shut down. The message goes to
+// the socket resolved from TERDR_TMUX_SOCKET or $TMUX, so it can only reach
+// this server's daemon — unlike a pattern kill, which would take every tmuxrd
+// daemon on the machine with it. The installer uses this to restart the daemon
+// after replacing the binary.
+func cmdStop() {
+	srv := tmux.NewServerFromEnv()
+	initSocketPath(srv)
+	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	b, _ := json.Marshal(daemonMsg{Cmd: "quit"})
 	b = append(b, '\n')
 	conn.Write(b)
 }

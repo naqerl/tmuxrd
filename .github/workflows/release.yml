@@ -43,7 +43,7 @@ jobs:
             CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath -ldflags "-s -w -X main.version=${version}" \
               -o "dist/${pkg}/bin/tmuxrd" ./cmd/tmuxrd
-            cp tmuxrd.tmux README.md "dist/${pkg}/"
+            cp tmuxrd.tmux README.md install.sh "dist/${pkg}/"
             cp scripts/*.sh "dist/${pkg}/scripts/"
             tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
             rm -rf "dist/${pkg}"

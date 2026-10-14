@@ -565,7 +565,7 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: tmuxrd client|daemon|notify|summary|adapt|version")
+		fmt.Println("usage: tmuxrd client|daemon|notify|summary|adapt|stop|version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -583,6 +583,8 @@ func main() {
 		cmdDaemon()
 	case "adapt":
 		cmdAdapt()
+	case "stop", "quit":
+		cmdStop()
 	case "notify":
 		cmdNotify()
 	case "client", "run":

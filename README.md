@@ -30,7 +30,27 @@ name plus the visible screen), so it works with any agent in any pane.
 
 ## Install
 
-### From a release tarball
+### One command (recommended)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/naqerl/tmuxrd/main/install.sh | bash
+```
+
+That downloads the latest release for your OS/architecture, installs it (default `~/.tmuxrd`),
+wires `~/.tmux.conf` to load it, and — if a tmux server is running — restarts the daemon and
+rebuilds the sidebar panes, so the new version is live immediately. Re-run the very same command to
+update.
+
+Overrides: `TMUXRD_ROOT` (install dir), `TMUXRD_CONF` (config to wire), `TMUXRD_VERSION`
+(a tag such as `v0.1.0`, default `latest`). Set these before `bash`, e.g.
+`curl … | TMUXRD_ROOT=/opt/tmuxrd bash`.
+
+Run `./install.sh` from a checkout instead and it builds and installs *that* checkout.
+
+> `mouse on` is not set for you (it changes tmux globally). If the installer warns that it is off,
+> add `set -g mouse on` to your config to enable click/tap selection in the sidebar.
+
+### From a release tarball (manual)
 
 ```sh
 version=v0.0.1
@@ -39,16 +59,17 @@ curl -fsSL "https://github.com/naqerl/tmuxrd/releases/download/$version/tmuxrd_l
 mv "$HOME/tmuxrd_linux_amd64" "$HOME/.tmuxrd"
 ```
 
-### From source
+### From source (manual)
 
 ```sh
 git clone https://github.com/naqerl/tmuxrd.git ~/.tmuxrd
 cd ~/.tmuxrd && make build          # builds bin/tmuxrd and the test fakeagent
 ```
 
-### Load it
+### Load it (manual installs)
 
-Add this to `~/.tmux.conf`:
+The one-command installer does this for you; a manual install needs these two lines in
+`~/.tmux.conf`:
 
 ```
 # @tmuxrd_root is where you installed tmuxrd (the directory holding tmuxrd.tmux)
@@ -64,6 +85,11 @@ tmux source-file ~/.tmux.conf
 
 The sidebar appears in every window. `tmuxrd` resolves all of its paths from `@tmuxrd_root`, so
 the checkout can live anywhere — set it whenever you install outside the default root.
+
+### Updating
+
+Re-run the one-command installer. It replaces the binary atomically, restarts the daemon for the
+running server(s), and rebuilds the sidebar panes so they run the new client. Nothing else to do.
 
 ## Keys
 
@@ -166,6 +192,7 @@ make vet
 | `tmuxrd client` | one sidebar pane's UI (auto-detects side vs strip) |
 | `tmuxrd adapt [--create]` | reshape sidebars to match their window; `--create` also adds a missing one |
 | `tmuxrd notify` | tell the daemon to re-detect now |
+| `tmuxrd stop` | shut down this server's daemon (a scoped restart; the installer uses it) |
 | `tmuxrd summary` | one-line agent census for the status line |
 
 ## Known limits
