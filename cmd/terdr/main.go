@@ -33,12 +33,27 @@ func waitForSignal() tea.Msg {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tickMsg, refreshMsg:
+	case stateUIMsg:
+		m.results = msg.Results
+		if cp := tmux.CurrentPane(); cp != "" {
+			found := false
+			for i, r := range m.results {
+				if r.PaneID == cp {
+					m.cursor = i
+					found = true
+					break
+				}
+			}
+			if !found {
+				m.cursor = -1
+			}
+		}
+	case tickMsg:
 		m.results = detect.Detect()
 		if cp := tmux.CurrentPane(); cp != "" {
 			found := false
@@ -191,13 +206,12 @@ func main() {
 			c[r.State]++
 		}
 		fmt.Printf("agents=%d idle=%d working=%d blocked=%d\n", len(results), c[detect.Idle], c[detect.Working], c[detect.Blocked])
-	case "run":
-		m := model{results: detect.Detect()}
-		p := tea.NewProgram(m)
-		if _, err := p.Run(); err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
+	case "daemon":
+		cmdDaemon()
+	case "notify":
+		cmdNotify()
+	case "client", "run":
+		runClient()
 	default:
 		fmt.Println("unknown command")
 		os.Exit(2)

@@ -7,7 +7,7 @@ if [ -n "$panes" ]; then
 else
   tmux list-windows -a -F '#{session_name}:#{window_index}' | while IFS= read -r w; do
     if ! tmux list-panes -t "$w" -F '#{@terdr_sidebar}' | grep -q '^1$'; then
-      newpane=$(tmux split-window -hb -t "$w" -d -P -F '#{pane_id}' -l 32 "$BIN run")
+      newpane=$(tmux split-window -hb -t "$w" -d -P -F '#{pane_id}' -l 32 "$BIN client")
       tmux set-option -p -t "$newpane" @terdr_sidebar 1
     fi
   done
