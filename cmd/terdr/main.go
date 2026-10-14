@@ -53,8 +53,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var (
-	glyphStyle = lipgloss.NewStyle().Width(2)
-	nameStyle  = lipgloss.NewStyle().Width(10)
+	titleStyle = lipgloss.NewStyle().Bold(true)
+	lineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	selStyle   = lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("15"))
 	stateStyle = map[detect.State]lipgloss.Style{
 		detect.Idle:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
 		detect.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
@@ -77,16 +78,37 @@ func glyph(s detect.State) string {
 }
 
 func (m model) View() string {
-	s := " terdr\n ----------\n"
+	s := titleStyle.Render(" terdr") + "\n" + lineStyle.Render(" ───────────────────") + "\n"
+	// group agent results by session preserving order
+	sessions := []string{}
+	groups := map[string][]int{}
 	for i, r := range m.results {
-		mark := "  "
-		if i == m.cursor {
-			mark = "> "
+		if _, ok := groups[r.Session]; !ok {
+			sessions = append(sessions, r.Session)
 		}
-		st := stateStyle[r.State]
-		s += fmt.Sprintf("%s%s %-7s %s\n", mark, glyph(r.State), r.Agent, st.Render(string(r.State)))
+		groups[r.Session] = append(groups[r.Session], i)
 	}
-	s += fmt.Sprintf("\n %d agents  j/k or C-n/C-p move · Enter focus · q quit\n", len(m.results))
+	idx := 0 // visual row index for cursor mapping among agents (flat)
+	// We map cursor to flat result index m.cursor, so build a flat pointer list
+	flat := make([]int, len(m.results))
+	for i := range m.results {
+		flat[i] = i
+	}
+	_ = idx
+	_ = flat
+	for _, sess := range sessions {
+		s += lipgloss.NewStyle().Bold(true).Render(" "+sess) + "\n"
+		for _, gi := range groups[sess] {
+			r := m.results[gi]
+			line := fmt.Sprintf("   %s %-7s %s  %s", glyph(r.State), r.Agent, r.State, r.Path)
+			suff := ""
+			if gi == m.cursor {
+				s += selStyle.Render(line+suff) + "\n"
+			} else {
+				s += line + "\n"
+			}
+		}
+	}
 	return s
 }
 

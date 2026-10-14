@@ -11,6 +11,8 @@ type Pane struct {
 	PID      string
 	Cmd      string
 	Path     string
+	Session  string
+	Window   string
 }
 
 func Run(args ...string) (string, error) {
@@ -19,7 +21,7 @@ func Run(args ...string) (string, error) {
 }
 
 func ListPanes() ([]Pane, error) {
-	out, err := Run("list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}")
+	out, err := Run("list-panes", "-a", "-F", "#{session_name}\t#{window_index}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}")
 	if err != nil {
 		return nil, err
 	}
@@ -29,10 +31,10 @@ func ListPanes() ([]Pane, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 4 {
+		if len(fields) < 6 {
 			continue
 		}
-		panes = append(panes, Pane{ID: fields[0], PID: fields[1], Cmd: fields[2], Path: fields[3]})
+		panes = append(panes, Pane{ID: fields[2], PID: fields[3], Cmd: fields[4], Path: fields[5], Session: fields[0], Window: fields[1]})
 	}
 	return panes, nil
 }
