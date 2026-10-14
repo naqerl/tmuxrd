@@ -219,23 +219,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// Palette in ANSI terminal colours (0-15), not fixed 256-colour indices, so the
-// sidebar follows whatever theme the terminal uses. The bar is bright-black so
-// the sidebar is distinct from the agent pane. An unselected agent is drawn as
-// a filled (light) pill with black text — the inverse of the agent text, for
-// contrast — and the selected one is blue.
+// ANSI terminal colours (0-15), not fixed 256-colour indices, so the sidebar
+// follows the terminal's own theme. Everything is black; the *only* colour is
+// the accent on the selected agent's row/tab.
 const (
-	barBg    lipgloss.ANSIColor = 8  // bright black: the sidebar surface
-	rowBg    lipgloss.ANSIColor = 7  // light: an unselected agent row / tab
-	rowFg    lipgloss.ANSIColor = 0  // black text on the light row
-	rowSelBg lipgloss.ANSIColor = 4  // blue: the selected row / tab
-	rowSelFg lipgloss.ANSIColor = 15 // bright white on blue
+	barBg    lipgloss.ANSIColor = 0  // black: the sidebar surface
+	rowBg    lipgloss.ANSIColor = 0  // black: an unselected agent row / tab
+	rowFg    lipgloss.ANSIColor = 7  // white text
+	rowSelBg lipgloss.ANSIColor = 4  // blue: the selected agent row / tab
+	rowSelFg lipgloss.ANSIColor = 15 // bright white
 )
 
 var (
 	barStyle       = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(7))
 	barTitleStyle  = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
-	barRuleStyle   = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(0))
+	barRuleStyle   = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(8))
 	barHeaderStyle = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.ANSIColor(15)).Bold(true)
 	tabStyle       = lipgloss.NewStyle().Background(rowBg).Foreground(rowFg)
 	tabSelStyle    = lipgloss.NewStyle().Background(rowSelBg).Foreground(rowSelFg).Bold(true)
@@ -283,33 +281,22 @@ func stateGlyph(s detect.State, spinView string) string {
 	}
 }
 
-// stateColor is the indicator colour for a row. The unselected row is light, so
-// the states that keep a colour use the dark ANSI variants (1/2); the selected
-// row is blue, so they use the bright ones (9/10). The working spinner is not a
-// state colour at all — it follows the row's foreground (black on the light row,
-// white on the blue one), so only blocked and idle carry colour.
+// stateColor is the indicator colour for a row. The working spinner follows the
+// row's foreground; blocked and idle keep a bright signal colour, which reads on
+// both black and the blue selected row.
 func stateColor(s detect.State, selected bool) lipgloss.TerminalColor {
-	if selected {
-		switch s {
-		case detect.Working:
-			return rowSelFg // white
-		case detect.Blocked:
-			return lipgloss.ANSIColor(9) // bright red
-		case detect.Idle:
-			return lipgloss.ANSIColor(10) // bright green
-		default:
-			return rowSelFg // white
-		}
-	}
 	switch s {
 	case detect.Working:
-		return rowFg // black
+		if selected {
+			return rowSelFg
+		}
+		return rowFg
 	case detect.Blocked:
-		return lipgloss.ANSIColor(1) // red on the light row
+		return lipgloss.ANSIColor(9) // bright red
 	case detect.Idle:
-		return lipgloss.ANSIColor(2) // green on the light row
+		return lipgloss.ANSIColor(10) // bright green
 	default:
-		return lipgloss.ANSIColor(8) // quiet grey on the light row
+		return lipgloss.ANSIColor(8) // quiet grey
 	}
 }
 
