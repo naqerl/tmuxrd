@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-BIN="/home/user/tmuxrd/bin/tmuxrd"
+BIN="/home/user/terdr/bin/tmuxrd"
 panes=$(tmux list-panes -a -F '#{pane_id} #{@tmuxrd_sidebar}' | awk '$2==1{print $1}')
 if [ -n "$panes" ]; then
   for p in $panes; do tmux kill-pane -t "$p"; done

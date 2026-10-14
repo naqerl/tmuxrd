@@ -23,21 +23,21 @@ func setupServer(t *testing.T) {
 	os.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 
 	tmux.Run("new-session", "-d", "-s", "t", "pi")
-	tmux.Run("source-file", "/home/user/tmuxrd/tmuxrd.tmux")
+	tmux.Run("source-file", "/home/user/terdr/tmuxrd.tmux")
 	time.Sleep(300 * time.Millisecond)
 }
 
 func TestIntegrationToggle(t *testing.T) {
 	setupServer(t)
 
-	tmux.Run("run-shell", "/home/user/tmuxrd/scripts/toggle_sidebar.sh >/dev/null 2>&1")
+	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(800 * time.Millisecond)
 	got, _ := tmux.Run("list-panes", "-a", "-F", "#{@tmuxrd_sidebar}")
 	if count(got, "1") != 1 {
 		t.Fatalf("expected 1 sidebar after toggle on, got %d", count(got, "1"))
 	}
 
-	tmux.Run("run-shell", "/home/user/tmuxrd/scripts/toggle_sidebar.sh >/dev/null 2>&1")
+	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(400 * time.Millisecond)
 	got, _ = tmux.Run("list-panes", "-a", "-F", "#{@tmuxrd_sidebar}")
 	if count(got, "1") != 0 {
@@ -48,7 +48,7 @@ func TestIntegrationToggle(t *testing.T) {
 func TestIntegrationOrphanCleanup(t *testing.T) {
 	setupServer(t)
 
-	tmux.Run("run-shell", "/home/user/tmuxrd/scripts/toggle_sidebar.sh >/dev/null 2>&1")
+	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(800 * time.Millisecond)
 
 	got, _ := tmux.Run("list-panes", "-t", "t", "-F", "#{pane_id} #{@tmuxrd_sidebar}")

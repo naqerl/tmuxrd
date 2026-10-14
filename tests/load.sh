@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SOCK=tmuxrd-load
-ROOT=/home/user/tmuxrd
+ROOT=/home/user/terdr
 BIN=$ROOT/bin/tmuxrd
 tmux -L "$SOCK" kill-server 2>/dev/null || true
 mkdir -p /tmp/mockbin
@@ -11,7 +11,7 @@ tmux -L "$SOCK" source-file "$ROOT/tmuxrd.tmux"
 sleep .3
 PATH=/tmp/mockbin:$PATH \
   TERDR_TMUX_SOCKET=$SOCK \
-  /home/user/tmuxrd/bin/tmuxrd daemon >/tmp/tmuxrd-load-daemon.log 2>&1 &
+  /home/user/terdr/bin/tmuxrd daemon >/tmp/tmuxrd-load-daemon.log 2>&1 &
 daemon=$!
 sleep .5
 for sessions in 5 15; do
