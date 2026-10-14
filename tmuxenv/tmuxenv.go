@@ -45,7 +45,7 @@ const (
 // New starts a fresh tmux server on an isolated socket and prepares a directory
 // of fake agent executables. socket must be a unique, non-default name.
 func New(socket string, repoRoot string) (*Env, error) {
-	if socket == "" || socket == tmux.DefaultSocket {
+	if socket == "" || socket == "default" {
 		return nil, fmt.Errorf("refusing non-isolated socket %q", socket)
 	}
 	e := &Env{

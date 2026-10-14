@@ -190,9 +190,24 @@ func cmdDaemon() {
 	defer ticker.Stop()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	ticks, gone := 0, 0
 	for {
 		select {
 		case <-ticker.C:
+			// If the server we serve has gone away, exit rather than poll a dead
+			// socket forever (that is how a daemon outlives its server and has to
+			// be hunted down later). Checked every ~5s, and twice before acting.
+			ticks++
+			if ticks%10 == 0 {
+				if srv.HasServer() {
+					gone = 0
+				} else {
+					gone++
+					if gone >= 2 {
+						return
+					}
+				}
+			}
 			refresh()
 		case <-sig:
 			return

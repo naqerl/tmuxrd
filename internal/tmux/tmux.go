@@ -12,55 +12,82 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
-
-// DefaultSocket is the socket name used in daemon socket *file* names for the
-// default server. It is not passed to tmux -L (that would be a different,
-// nonexistent server); it only namespaces the Unix socket file.
-const DefaultSocket = "tmuxrd-default"
 
 // EnvVar selects the socket for a Server resolved from the environment.
 const EnvVar = "TERDR_TMUX_SOCKET"
 
-// Server addresses one tmux server by socket name.
-// The zero value (Socket == "") addresses the default tmux server (bare tmux).
+// Server addresses one tmux server. Both ways of naming one are supported:
+//
+//   - SocketPath: the server's actual socket path, passed as `-S`. This is how a
+//     process inside tmux identifies "the server I am running in" ($TMUX), and it
+//     is exact — no name resolution, no ambiguity.
+//   - Socket: a socket *name*, passed as `-L` (tmuxrd's TERDR_TMUX_SOCKET).
+//
+// Both empty addresses the default server with a bare `tmux`, which also honours
+// an inherited $TMUX.
 type Server struct {
-	Socket string // empty = default tmux server (bare tmux)
+	SocketPath string // -S: full socket path (empty = use Socket or default)
+	Socket     string // -L: socket name (empty = default)
 }
 
-// NewServer returns a Server for the named socket. An empty name selects the
-// default tmux server; a non-empty name is passed to tmux -L.
+// NewServer returns a Server for the named socket (-L). An empty name selects
+// the default tmux server.
 func NewServer(socket string) Server {
 	return Server{Socket: socket}
 }
 
-// NewServerFromEnv resolves a Server from TERDR_TMUX_SOCKET. Absent or empty
-// values resolve to the default tmux server (bare tmux).
+// NewServerFromEnv resolves the tmux server to talk to:
+//
+//   - TERDR_TMUX_SOCKET set -> that socket name (-L);
+//   - otherwise $TMUX        -> the server this process is running inside, by its
+//     socket path (-S), so a daemon started by tmux server A can never query tmux
+//     server B. Without this a `tmux -L foo` server (which also auto-loads the
+//     config) started a daemon that hijacked the *default* daemon socket and then
+//     queried the wrong server, leaving the real sidebar empty;
+//   - otherwise              -> the default server.
 func NewServerFromEnv() Server {
-	return NewServer(os.Getenv(EnvVar))
+	if name := os.Getenv(EnvVar); name != "" {
+		return Server{Socket: name}
+	}
+	return Server{SocketPath: socketPathFromTMUX(os.Getenv("TMUX"))}
 }
 
-// IsDefault reports whether this server is the process' default tmux instance.
-func (s Server) IsDefault() bool { return s.Socket == "" }
+// socketPathFromTMUX extracts the socket path from $TMUX, which tmux sets to
+// "<socket path>,<server pid>,<session id>".
+func socketPathFromTMUX(tmux string) string {
+	if i := strings.IndexByte(tmux, ','); i >= 0 {
+		return tmux[:i]
+	}
+	return tmux
+}
 
-// prefix builds the leading argv for a tmux invocation: bare tmux for the
-// default server, "-L <Socket>" otherwise.
+// IsDefault reports whether this server is the default tmux instance.
+func (s Server) IsDefault() bool { return s.SocketPath == "" && s.Socket == "" }
+
+// prefix builds the leading argv for a tmux invocation.
 func (s Server) prefix() []string {
-	if s.Socket == "" {
-		return nil
+	switch {
+	case s.SocketPath != "":
+		return []string{"-S", s.SocketPath}
+	case s.Socket != "":
+		return []string{"-L", s.Socket}
 	}
-	return []string{"-L", s.Socket}
+	return nil
 }
 
-// SocketFile returns the name used to namespace this server's daemon socket
-// file (the caller prefixes "tmuxrd-"). The default server maps to "default";
-// named servers use their name.
+// SocketFile names this server's daemon socket file, so two tmux servers never
+// share one daemon.
 func (s Server) SocketFile() string {
-	if s.Socket == "" {
-		return "default"
+	if s.SocketPath != "" {
+		return filepath.Base(s.SocketPath)
 	}
-	return s.Socket
+	if s.Socket != "" {
+		return s.Socket
+	}
+	return "default"
 }
 
 // Run executes tmux against this server.
@@ -208,8 +235,11 @@ func (s Server) IsTmux() bool { return os.Getenv("TMUX") != "" }
 
 // String renders the server's identity for logs/errors.
 func (s Server) String() string {
-	if s.Socket == "" {
-		return "tmux (default socket)"
+	switch {
+	case s.SocketPath != "":
+		return fmt.Sprintf("tmux -S %s", s.SocketPath)
+	case s.Socket != "":
+		return fmt.Sprintf("tmux -L %s", s.Socket)
 	}
-	return fmt.Sprintf("tmux -L %s", s.Socket)
+	return "tmux (default socket)"
 }
