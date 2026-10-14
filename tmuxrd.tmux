@@ -8,6 +8,7 @@ set-hook -g after-new-window 'run-shell "/home/user/terdr/scripts/ensure_sidebar
 set-hook -g after-new-session 'run-shell "/home/user/terdr/scripts/ensure_sidebar.sh >/dev/null 2>&1"'
 set-hook -g pane-exited 'run-shell "/home/user/terdr/scripts/cleanup_orphans.sh >/dev/null 2>&1; /home/user/terdr/bin/tmuxrd notify >/dev/null 2>&1 || true"'
 set-hook -g after-kill-pane 'run-shell "/home/user/terdr/scripts/cleanup_orphans.sh >/dev/null 2>&1; /home/user/terdr/bin/tmuxrd notify >/dev/null 2>&1 || true"'
+set-hook -g pane-focus-in 'run-shell "/home/user/terdr/bin/tmuxrd notify >/dev/null 2>&1 || true"'
 set-hook -g after-select-pane 'run-shell "/home/user/terdr/bin/tmuxrd notify >/dev/null 2>&1 || true"'
 set-hook -g after-select-window 'run-shell "/home/user/terdr/bin/tmuxrd notify >/dev/null 2>&1 || true"'
 set-hook -g after-split-window 'run-shell "/home/user/terdr/bin/tmuxrd notify >/dev/null 2>&1 || true"'
