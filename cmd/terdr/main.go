@@ -3,12 +3,64 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/naqerl/terdr/internal/detect"
 	"github.com/naqerl/terdr/internal/tmux"
+)
+
+type tickMsg time.Time
+
+type model struct {
+	results []detect.Result
+	cursor  int
+}
+
+func (m model) Init() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tickMsg:
+		m.results = detect.Detect()
+		if m.cursor >= len(m.results) && len(m.results) > 0 {
+			m.cursor = len(m.results) - 1
+		}
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "j", "down", "ctrl+n":
+			if m.cursor < len(m.results)-1 {
+				m.cursor++
+			}
+		case "k", "up", "ctrl+p":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "enter":
+			if len(m.results) > 0 && m.cursor < len(m.results) {
+				tmux.FocusPane(m.results[m.cursor].PaneID)
+			}
+		}
+	}
+	return m, nil
+}
+
+var (
+	glyphStyle = lipgloss.NewStyle().Width(2)
+	nameStyle  = lipgloss.NewStyle().Width(10)
+	stateStyle = map[detect.State]lipgloss.Style{
+		detect.Idle:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
+		detect.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
+		detect.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
+		detect.Unknown: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
+	}
 )
 
 func glyph(s detect.State) string {
@@ -24,31 +76,18 @@ func glyph(s detect.State) string {
 	}
 }
 
-func render() {
-	results := detect.Detect()
-	fmt.Print("\033[2J\033[H")
-	fmt.Println(" terdr — agent panes")
-	fmt.Println(" -------------------")
-	for _, r := range results {
-		fmt.Printf(" %s  %-7s  %-8s  %s\n", glyph(r.State), r.Agent, r.State, shortPath(r.Path))
+func (m model) View() string {
+	s := " terdr\n ----------\n"
+	for i, r := range m.results {
+		mark := "  "
+		if i == m.cursor {
+			mark = "> "
+		}
+		st := stateStyle[r.State]
+		s += fmt.Sprintf("%s%s %-7s %s\n", mark, glyph(r.State), r.Agent, st.Render(string(r.State)))
 	}
-	fmt.Printf("\n %d agents\n", len(results))
-}
-
-func shortPath(p string) string {
-	// basename-ish
-	if p == "" {
-		return "-"
-	}
-	// last component
-	i := len(p) - 1
-	for i > 0 && p[i] != '/' {
-		i--
-	}
-	if i >= 0 && i < len(p)-1 {
-		return p[i+1:]
-	}
-	return p
+	s += fmt.Sprintf("\n %d agents  j/k or C-n/C-p move · Enter focus · q quit\n", len(m.results))
+	return s
 }
 
 func main() {
@@ -65,25 +104,12 @@ func main() {
 		}
 		fmt.Printf("agents=%d idle=%d working=%d blocked=%d\n", len(results), c[detect.Idle], c[detect.Working], c[detect.Blocked])
 	case "run":
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		render()
-		for {
-			select {
-			case <-sig:
-				return
-			case <-ticker.C:
-				render()
-			}
+		m := model{results: detect.Detect()}
+		p := tea.NewProgram(m)
+		if _, err := p.Run(); err != nil {
+			fmt.Println(err)
+			os.Exit(1)
 		}
-	case "jump":
-		// terdr jump %id
-		if len(os.Args) < 3 {
-			return
-		}
-		tmux.SelectPane(os.Args[2])
 	default:
 		fmt.Println("unknown command")
 		os.Exit(2)

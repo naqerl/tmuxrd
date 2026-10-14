@@ -42,7 +42,12 @@ func Capture(paneID string) string {
 	return out
 }
 
-func SelectPane(paneID string) { Run("select-pane", "-t", paneID) }
+func SelectPane(paneID string) {
+	Run("switch-client", "-t", paneID)
+	Run("select-pane", "-t", paneID)
+}
+
+func FocusPane(paneID string) { SelectPane(paneID) }
 
 func Option(name, value string) { Run("set-option", "-gq", name, value) }
 
