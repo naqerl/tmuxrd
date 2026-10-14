@@ -20,3 +20,14 @@ Feature: Test scenarios can never touch the live tmux server
       | 0      |
     When I kill the isolated server
     Then the isolated server should be gone
+
+  Scenario: Loading the config cannot start a daemon on the default server
+    Given an isolated tmux server "tmuxrd-godog-e" with sessions:
+      | session |
+      | s1      |
+    And session "s1" has windows:
+      | window |
+      | 0      |
+    When the tmuxrd config is loaded
+    Then the isolated server should advertise its own socket
+    And exactly one daemon should be running

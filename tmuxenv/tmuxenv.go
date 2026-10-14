@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/naqerl/tmuxrd/internal/detect"
@@ -24,7 +26,8 @@ type Env struct {
 	Bin          string // absolute path to the tmuxrd binary
 	Scripts      string // absolute path to the scripts/ dir
 	Config       string // absolute path to tmuxrd.tmux
-	Daemon       int    // pid of the daemon we started, 0 if none
+	Daemon       int    // pid of the first daemon we started, 0 if none
+	daemons      []int  // every daemon pid we started, so Close can reap them all
 	fakeName     string
 	envPublished bool
 }
@@ -92,6 +95,7 @@ func (e *Env) Close() {
 		time.Sleep(20 * time.Millisecond)
 	}
 	os.Remove(filepath.Join(os.TempDir(), "tmux-1000", e.Socket))
+	os.RemoveAll(e.runtimeDir())
 	os.RemoveAll(e.BinDir)
 }
 
@@ -195,9 +199,6 @@ func (e *Env) SetAgentState(sess, win, state string) error {
 // NewSession creates a detached session running a fake agent in the given
 // state ("" = idle banner).
 func (e *Env) NewSession(name, agent, state string) error {
-	if err := e.ensureClientEnv(); err != nil {
-		return err
-	}
 	cmd, err := e.cmd(agent, state)
 	if err != nil {
 		return err
@@ -206,7 +207,10 @@ func (e *Env) NewSession(name, agent, state string) error {
 	if err != nil {
 		return fmt.Errorf("new-session %s (%s): %v: %s", name, cmd, err, out)
 	}
-	return nil
+	// Publish after the command: the first session is what brings the server
+	// into existence, and a config-sourced daemon only targets our socket once
+	// this lands in the server's global environment.
+	return e.ensureClientEnv()
 }
 
 // NewWindow adds a window to session running a fake agent in the given state
@@ -214,9 +218,6 @@ func (e *Env) NewSession(name, agent, state string) error {
 // NOTE: -t sess: (with the trailing colon) — without it tmux resolves -t to a
 // window index and fails with "index 0 in use".
 func (e *Env) NewWindow(sess, agent, state string) error {
-	if err := e.ensureClientEnv(); err != nil {
-		return err
-	}
 	cmd, err := e.cmd(agent, state)
 	if err != nil {
 		return err
@@ -225,11 +226,23 @@ func (e *Env) NewWindow(sess, agent, state string) error {
 	if err != nil {
 		return fmt.Errorf("new-window %s: (%s): %v: %s", sess, cmd, err, out)
 	}
-	return nil
+	return e.ensureClientEnv()
 }
 
 // SourceConfig loads tmuxrd.tmux (daemon start + hooks + status line).
+//
+// tmux runs the config's run-shell jobs with the *server's* global
+// environment, not ours, so the daemon the config starts only targets our
+// socket if the env is published first. Without this it would fall back to the
+// process' default tmux server — i.e. the operator's live one.
 func (e *Env) SourceConfig() error {
+	if err := e.publishClientEnv(); err != nil {
+		return err
+	}
+	if got := e.serverEnv(tmux.EnvVar); got != e.Socket {
+		return fmt.Errorf("refusing to source config: server %s has %s=%q, want %q",
+			e.Socket, tmux.EnvVar, got, e.Socket)
+	}
 	cmd := exec.Command("tmux", "-L", e.Socket, "source-file", e.Config)
 	cmd.Env = append(os.Environ(),
 		"PATH="+e.PATH(),
@@ -273,6 +286,58 @@ func (e *Env) runtimeDir() string {
 	d := filepath.Join(os.TempDir(), "tmuxrd-rt-"+e.Socket)
 	os.MkdirAll(d, 0o700)
 	return d
+}
+
+// publishClientEnv force-publishes the client env and requires a server.
+func (e *Env) publishClientEnv() error {
+	if !e.Server.HasServer() {
+		return fmt.Errorf("cannot publish client env: no server on %s", e.Socket)
+	}
+	e.envPublished = false
+	return e.ensureClientEnv()
+}
+
+// serverEnv reads a global environment variable from our tmux server.
+func (e *Env) serverEnv(name string) string {
+	out, _ := e.Server.Run("show-environment", "-g", name)
+	if i := strings.IndexByte(out, '='); i >= 0 {
+		return out[i+1:]
+	}
+	return ""
+}
+
+// ServerEnv exposes the server's global environment for assertions.
+func (e *Env) ServerEnv(name string) string { return e.serverEnv(name) }
+
+// DaemonPIDs returns the pids of live `tmuxrd daemon` processes bound to this
+// Env's socket, by scanning /proc for TERDR_TMUX_SOCKET=<socket>. It is the
+// only way to notice a daemon that outlived its scenario, or one that fell back
+// to the default tmux server.
+func (e *Env) DaemonPIDs() []int {
+	var pids []int
+	want := tmux.EnvVar + "=" + e.Socket
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	for _, ent := range entries {
+		if _, err := strconv.Atoi(ent.Name()); err != nil {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + ent.Name() + "/comm")
+		if err != nil || strings.TrimSpace(string(comm)) != "tmuxrd" {
+			continue
+		}
+		envb, err := os.ReadFile("/proc/" + ent.Name() + "/environ")
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(envb), want+"\x00") {
+			pid, _ := strconv.Atoi(ent.Name())
+			pids = append(pids, pid)
+		}
+	}
+	return pids
 }
 
 // runScript runs one of the shell helpers against this server with the right
@@ -322,8 +387,13 @@ func (e *Env) RunBin(args ...string) (string, error) {
 	return strings.TrimRight(string(out), "\n"), err
 }
 
-// StartDaemon launches the tmuxrd daemon for this server in the background.
+// StartDaemon ensures one tmuxrd daemon is running for this server. It is
+// idempotent: a daemon already running for our socket is enough, and starting
+// another would be rejected by the daemon's singleton guard anyway.
 func (e *Env) StartDaemon() error {
+	if e.Daemon != 0 && e.DaemonAlive(e.Daemon) {
+		return nil
+	}
 	cmd := exec.Command(e.Bin, "daemon")
 	cmd.Env = append(os.Environ(),
 		"PATH="+e.PATH(),
@@ -335,7 +405,10 @@ func (e *Env) StartDaemon() error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
-	e.Daemon = cmd.Process.Pid
+	if e.Daemon == 0 {
+		e.Daemon = cmd.Process.Pid
+	}
+	e.daemons = append(e.daemons, cmd.Process.Pid)
 	go cmd.Wait() // reap
 	// wait for the socket to appear
 	sock := filepath.Join(e.runtimeDir(), "tmuxrd-"+e.Socket+".sock")
@@ -349,14 +422,26 @@ func (e *Env) StartDaemon() error {
 	return fmt.Errorf("daemon socket %s never appeared", sock)
 }
 
-// StopDaemon kills the daemon started by StartDaemon.
+// DaemonAlive reports whether pid is still running.
+func (e *Env) DaemonAlive(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.Signal(0)) == nil
+}
+
+// StopDaemon kills every daemon this Env started. Killing all of them (rather
+// than just the last pid) is what stops an earlier daemon from being orphaned
+// when a scenario starts the daemon more than once.
 func (e *Env) StopDaemon() {
-	if e.Daemon != 0 {
-		if p, err := os.FindProcess(e.Daemon); err == nil {
+	for _, pid := range e.daemons {
+		if p, err := os.FindProcess(pid); err == nil {
 			p.Kill()
 		}
-		e.Daemon = 0
 	}
+	e.daemons = nil
+	e.Daemon = 0
 }
 
 // SidebarPanes returns pane ids tagged @tmuxrd_sidebar=1.

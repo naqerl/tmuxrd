@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -422,15 +421,17 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		})
 	})
 	s.Step(`^exactly one daemon should be running$`, func(ctx context.Context) error {
-		// The singleton guard means a second StartDaemon returns without
-		// creating a new socket; we assert the process is alive.
-		if cur.env.Daemon == 0 {
-			return fmt.Errorf("daemon not started")
-		}
-		if _, err := os.FindProcess(cur.env.Daemon); err != nil {
-			return err
-		}
-		return nil
+		// Count real processes bound to our socket via /proc, not just the pid we
+		// recorded: that catches both a leaked daemon outliving its scenario and
+		// one that fell back to the default tmux server.
+		return eventually(3*time.Second, func() error {
+			pids := cur.env.DaemonPIDs()
+			if len(pids) != 1 {
+				return fmt.Errorf("expected exactly 1 daemon for socket %s, got %d: %v",
+					cur.env.Socket, len(pids), pids)
+			}
+			return nil
+		})
 	})
 	s.Step(`^summary agents should be (\d+)$`, func(ctx context.Context, want int) error {
 		return eventually(3*time.Second, func() error {
@@ -508,6 +509,15 @@ func InitializeScenario(s *godog.ScenarioContext) {
 			}
 			return nil
 		})
+	})
+	s.Step(`^the isolated server should advertise its own socket$`, func(ctx context.Context) error {
+		// This is what keeps a config-sourced daemon on our socket: tmux runs
+		// run-shell with the server's global env, so if this is not published
+		// the daemon falls back to the operator's default tmux server.
+		if got := cur.env.ServerEnv("TERDR_TMUX_SOCKET"); got != cur.env.Socket {
+			return fmt.Errorf("server advertises TERDR_TMUX_SOCKET=%q, want %q", got, cur.env.Socket)
+		}
+		return nil
 	})
 	s.Step(`^the server should be the isolated one$`, func(ctx context.Context) error {
 		if cur.env.Server.Socket == "" || cur.env.Server.Socket == "default" {
