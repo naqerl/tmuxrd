@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"os"
 	"time"
 
@@ -17,6 +18,7 @@ type tickMsg time.Time
 type model struct {
 	results []detect.Result
 	cursor  int
+	width   int
 }
 
 func (m model) Init() tea.Cmd {
@@ -31,6 +33,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = len(m.results) - 1
 		}
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -78,7 +82,9 @@ func glyph(s detect.State) string {
 }
 
 func (m model) View() string {
-	s := titleStyle.Render(" terdr") + "\n" + lineStyle.Render(" ───────────────────") + "\n"
+	line := "─"
+	if m.width > 0 { line = strings.Repeat("─", m.width) }
+	s := titleStyle.Render(" terdr") + "\n" + lineStyle.Render(line) + "\n"
 	// group agent results by session preserving order
 	sessions := []string{}
 	groups := map[string][]int{}
