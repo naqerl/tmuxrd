@@ -212,7 +212,14 @@ func (e *Env) NewSession(name, agent, state string) error {
 	if err != nil {
 		return err
 	}
-	out, err := e.run("new-session", "-d", "-s", name, cmd)
+	// Give the session a realistic size. A detached server defaults to 80x24, and
+	// at 80 columns pi's question footer is truncated — so the very thing the
+	// blocked detection keys on would never be on screen (a real 117-col pane
+	// shows it in full).
+	// -f /dev/null keeps the scenario hermetic: without it tmux reads the
+	// operator's ~/.tmux.conf, which now auto-loads tmuxrd — that would create
+	// sidebars behind the scenario's back and start an untracked daemon.
+	out, err := e.run("-f", "/dev/null", "new-session", "-d", "-s", name, "-x", "220", "-y", "50", cmd)
 	if err != nil {
 		return fmt.Errorf("new-session %s (%s): %v: %s", name, cmd, err, out)
 	}

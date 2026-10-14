@@ -75,7 +75,37 @@ const (
 	stateUnknown = "unknown"
 )
 
-// banner renders the detect-visible state as plain, detect-readable text.
+// piQuestionFooter is pi's real multi-select footer, captured verbatim. The
+// fake renders it together with numbered "[ ]" options so the detection path is
+// exercised end to end; keep it byte-identical to pi's output.
+const piQuestionFooter = "Enter to select · ↑/↓ to navigate · Space to toggle · n to add notes · Esc to cancel · Ctrl+] to collapse"
+
+// piQuestion renders pi's multiple-choice prompt: two or more numbered "[ ]"
+// options and the footer help.
+func piQuestion() string {
+	return strings.Join([]string{
+		" Which cleanup tiers should I run?",
+		"",
+		"❯ 1. [ ] Tier 1: pure waste (Recommended)",
+		"  Stop/disable the crash-looping service, clear journals, delete stale backups.",
+		"  2. [ ] Tier 2: rebuildable caches",
+		"  Also clear npm, Go module and docker build caches.",
+		"  3. [ ] Type something.",
+		"",
+		piQuestionFooter,
+	}, "\n")
+}
+
+// notAQuestion is a numbered checklist WITHOUT the footer: the options alone
+// must stay Unknown, not Blocked.
+func notAQuestion() string {
+	return strings.Join([]string{
+		"nothing to report",
+		"1. [ ] not a question",
+		"2. [ ] still not one",
+	}, "\n")
+}
+
 // The TUI renders richer frames; these banners are the headless fallback
 // (no TTY) and the contract for what internal/detect.classifyTail expects.
 func banner(state string) string {
@@ -85,13 +115,13 @@ func banner(state string) string {
 		// carries one just like the TUI frame does.
 		return "⠋ Thinking...\nworking\n↑1.2M ↓132k  27.0%\n"
 	case stateBlocked:
-		return "Working...\nChoose an option:\n[y/n]\n"
+		return piQuestion() + "\n"
 	case stateUnknown:
-		return "nothing to report\n"
+		return notAQuestion() + "\n"
 	case stateIdle, "":
 		return "ready> "
 	default:
-		return "nothing to report\n"
+		return notAQuestion() + "\n"
 	}
 }
 
@@ -253,18 +283,9 @@ func (m model) View() string {
 			styleDim.Render("esc:cancel  ctrl+c:cancel"),
 		}, "\n")
 	case stateBlocked:
-		return strings.Join([]string{
-			m.p.prompt + "> run " + m.p.tool,
-			"",
-			"  Working...",
-			"",
-			styleQuestion.Render("  Choose an option:"),
-			"  [y/n]",
-			"",
-			styleDim.Render("esc:cancel"),
-		}, "\n")
+		return piQuestion()
 	case stateUnknown:
-		return "nothing to report"
+		return notAQuestion()
 	default: // idle
 		var b strings.Builder
 		for _, l := range m.msgs {

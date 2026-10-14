@@ -2,6 +2,7 @@ package detect
 
 import (
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -43,8 +44,44 @@ func isAgentCmd(cmd string) string {
 	return ""
 }
 
-func classifyTail(tail string) State {
-	lines := strings.Split(tail, "\n")
+// piQuestionFooter is the exact last line of pi's multiple-choice prompt,
+// captured verbatim from a real pi question. Together with the numbered "[ ]"
+// options above it, it is the only state in which pi is waiting on the user.
+const piQuestionFooter = "Enter to select · ↑/↓ to navigate · Space to toggle · n to add notes · Esc to cancel · Ctrl+] to collapse"
+
+// piOptionRe matches one numbered checkbox option, e.g. "❯ 1. [ ] Tier 1" or
+// "  2. [x] Tier 2". \s matches newlines too, so an option that wraps between
+// the number and the box still counts.
+var piOptionRe = regexp.MustCompile(`\d+\.\s*\[[ xX]\]`)
+
+// piAwaitingAnswer reports whether the screen is pi's multi-select question.
+//
+// It requires BOTH pi's exact footer help AND at least two numbered "[ ]"
+// options. Requiring both is what makes it precise: an agent's own markdown
+// checklist has the options but never the footer, and the footer alone is
+// specific to this prompt. Loose keyword matching ("option", "select", "1.",
+// "working") matched ordinary text on screen and produced false positives.
+//
+// Whitespace is ignored when matching the footer so a terminal that wraps it
+// mid-word still matches. Note the limit this cannot cover: if the pane is too
+// narrow for the footer the TUI *truncates* it, and then it is genuinely not on
+// screen (pi's own footer needs ~110 columns).
+func piAwaitingAnswer(screen string) bool {
+	if !strings.Contains(squeeze(screen), piQuestionFooterKey) {
+		return false
+	}
+	return len(piOptionRe.FindAllString(screen, -1)) >= 2
+}
+
+// squeeze removes every whitespace character, so text that the terminal wrapped
+// mid-word still matches and spacing differences are irrelevant.
+func squeeze(s string) string { return strings.Join(strings.Fields(s), "") }
+
+// piQuestionFooterKey is the footer with all whitespace removed.
+var piQuestionFooterKey = squeeze(piQuestionFooter)
+
+func classifyScreen(screen, agent string) State {
+	lines := strings.Split(screen, "\n")
 	// last 6 non-empty
 	var nz []string
 	for _, l := range lines {
@@ -55,16 +92,6 @@ func classifyTail(tail string) State {
 	if len(nz) > 6 {
 		nz = nz[len(nz)-6:]
 	}
-	// Working is the agent's braille spinner animation and nothing else.
-	// Word patterns ("working", "thinking", "running", "waiting", "...")
-	// matched ordinary text on screen — a token counter, a path, a file scrolled
-	// past — so panes were reported as working when they were not. The spinner
-	// is the agent's own progress indicator, so its presence is the signal.
-	for _, l := range nz {
-		if strings.ContainsAny(l, brailleSpinner) {
-			return Working
-		}
-	}
 	// Strong idle: shell prompt visible at the end.
 	if len(nz) > 0 {
 		last := strings.TrimSpace(nz[len(nz)-1])
@@ -72,19 +99,27 @@ func classifyTail(tail string) State {
 			return Idle
 		}
 	}
-	joined := strings.ToLower(strings.Join(nz, "\n"))
-	// blocked strict patterns
-	blockedPats := []string{
-		"[y/n]", "yes/no", "approve", "allow?", "permission", "select:",
-		"❯ 1.", "choose an option", "action required",
-		"yes, proceed", "no, reject", "ctrl+o:yolo",
-		"tab:scrollback", "shift+x:dismiss",
-	}
-	for _, p := range blockedPats {
-		if strings.Contains(joined, p) {
+	// pi waits on the user in exactly one UI, matched structurally; other
+	// agents fall back to the keyword set. Blocked is checked before working so
+	// a question is never masked by an incidental spinner.
+	if agent == "pi" {
+		if piAwaitingAnswer(screen) {
 			return Blocked
 		}
+	} else if blockedKeywords(nz) {
+		return Blocked
 	}
+	// Working is the agent's braille spinner animation and nothing else. Word
+	// patterns ("working", "thinking", "running", "waiting", "...") matched
+	// ordinary text on screen — a token counter, a path, a file scrolled past —
+	// so panes were reported as working when they were not. Scanning only the
+	// tail avoids matching old output that has scrolled up.
+	for _, l := range nz {
+		if strings.ContainsAny(l, brailleSpinner) {
+			return Working
+		}
+	}
+	joined := strings.ToLower(strings.Join(nz, "\n"))
 	// idle when the herdr-style footer is present
 	if strings.Contains(joined, "ctrl+.:shortcuts") {
 		return Idle
@@ -98,6 +133,24 @@ func classifyTail(tail string) State {
 		return Idle
 	}
 	return Unknown
+}
+
+// blockedKeywords is the fallback for agents other than pi.
+func blockedKeywords(nz []string) bool {
+	joined := strings.ToLower(strings.Join(nz, "\n"))
+	for _, p := range blockedPats {
+		if strings.Contains(joined, p) {
+			return true
+		}
+	}
+	return false
+}
+
+var blockedPats = []string{
+	"[y/n]", "yes/no", "approve", "allow?", "permission", "select:",
+	"❯ 1.", "choose an option", "action required",
+	"yes, proceed", "no, reject", "ctrl+o:yolo",
+	"tab:scrollback", "shift+x:dismiss",
 }
 
 // brailleSpinner is every Unicode braille pattern (U+2801..U+28FF). All the
@@ -185,7 +238,7 @@ func Detect(s tmux.Server) []Result {
 			continue
 		}
 		screen := s.Capture(p.ID)
-		st := classifyTail(screen)
+		st := classifyScreen(screen, agent)
 		fc := foregroundCommand(p.PID)
 		if fc == "" || isShell(fc) {
 			st = Idle
