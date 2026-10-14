@@ -105,6 +105,23 @@ func statusCircle(s detect.State) string {
 	return st.Render(circle)
 }
 
+
+func abbreviatePath(pth string) string {
+	if home, _ := os.UserHomeDir(); home != "" {
+		pth = strings.Replace(pth, home, "~", 1)
+	}
+	parts := strings.Split(pth, "/")
+	if len(parts) <= 2 {
+		return pth
+	}
+	for i := 1; i < len(parts)-1; i++ {
+		if parts[i] != "" && parts[i] != "~" {
+			parts[i] = string([]rune(parts[i])[:1])
+		}
+	}
+	return strings.Join(parts, "/")
+}
+
 func (m model) View() string {
 	line := "─"
 	if m.width > 0 { line = strings.Repeat("─", m.width) }
@@ -130,7 +147,7 @@ func (m model) View() string {
 		s += lipgloss.NewStyle().Bold(true).Render(" "+sess) + "\n"
 		for _, gi := range groups[sess] {
 			r := m.results[gi]
-			pth := r.Path
+			pth := abbreviatePath(r.Path)
 			if home, _ := os.UserHomeDir(); home != "" {
 				pth = strings.Replace(pth, home, "~", 1)
 			}
@@ -144,6 +161,9 @@ func (m model) View() string {
 				label = r.WindowName + " (" + r.Agent + ")"
 			}
 			line := fmt.Sprintf("%s  %s  %-12s %s", mark, circle, label, pth)
+			if m.width > 0 && len([]rune(line)) > m.width {
+				line = string([]rune(line)[:m.width-3]) + "..."
+			}
 			s += line + "\n"
 		}
 	}
