@@ -29,6 +29,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
 		m.results = detect.Detect()
+		if cp := tmux.CurrentPane(); cp != "" {
+			for i, r := range m.results {
+				if r.PaneID == cp {
+					m.cursor = i
+					break
+				}
+			}
+		}
 		if m.cursor >= len(m.results) && len(m.results) > 0 {
 			m.cursor = len(m.results) - 1
 		}

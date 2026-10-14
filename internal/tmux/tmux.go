@@ -49,6 +49,11 @@ func Capture(paneID string) string {
 	return out
 }
 
+func CurrentPane() string {
+	out, _ := Run("display-message", "-p", "#{pane_id}")
+	return strings.TrimSpace(out)
+}
+
 func SelectPane(paneID string) {
 	Run("switch-client", "-t", paneID)
 	Run("select-pane", "-t", paneID)
