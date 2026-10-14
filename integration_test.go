@@ -4,7 +4,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -43,13 +42,12 @@ func TestIntegrationToggleAndOrphan(t *testing.T) {
 
 	// orphan cleanup
 	tmux.Run("new-session", "-d", "-s", "u", "pi")
-	tmux.Run("run-shell", "/home/user/terdr/scripts/toggle_sidebar.sh >/dev/null 2>&1")
 	time.Sleep(600 * time.Millisecond)
-	_ = exec.Command("true")
 	tmux.Run("kill-pane", "-t", "u:0.0")
 	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 	if got, _ := tmux.Run("list-panes", "-a", "-F", "#{@terdr_sidebar}"); count(got, "1") > 2 {
-		t.Fatalf("orphan sidebars left: %d", count(got, "1"))
+		t.Fatalf("too many sidebars left after orphan cleanup: %d", count(got, "1"))
 	}
 }
 
