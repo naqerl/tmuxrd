@@ -521,6 +521,46 @@ func (e *Env) SelectWindow(target string) error {
 	return err
 }
 
+// SidebarPane returns the first sidebar pane id.
+func (e *Env) SidebarPane() (string, error) {
+	ids, err := e.SidebarPanes()
+	if err != nil {
+		return "", err
+	}
+	if len(ids) == 0 {
+		return "", fmt.Errorf("no sidebar pane")
+	}
+	return ids[0], nil
+}
+
+// SelectPane makes a pane the active pane of its window (no client needed).
+func (e *Env) SelectPane(paneID string) error {
+	_, err := e.run("select-pane", "-t", paneID)
+	return err
+}
+
+// SendKeys types keys into a pane, e.g. to drive the sidebar TUI.
+func (e *Env) SendKeys(paneID, keys string) error {
+	_, err := e.run("send-keys", "-t", paneID, keys)
+	return err
+}
+
+// SidebarMarked returns the sidebar rows carrying the selection marker, so a
+// test can tell whether the marker survived (rather than vanished).
+func (e *Env) SidebarMarked() ([]string, error) {
+	content, err := e.SidebarContent()
+	if err != nil {
+		return nil, err
+	}
+	var rows []string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, ">") {
+			rows = append(rows, line)
+		}
+	}
+	return rows, nil
+}
+
 // CurrentWindow returns the active window index of the given session.
 func (e *Env) CurrentWindow(sess string) (string, error) {
 	out, err := e.run("list-windows", "-t", sess, "-F",

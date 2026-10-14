@@ -138,9 +138,17 @@ func (s Server) CurrentPane() string {
 	return strings.TrimSpace(out)
 }
 
-// SelectPane switches both the client and the window's selected pane.
+// SelectPane focuses a pane: switch the client to its session, select its
+// window, then make it the active pane.
+//
+// select-window is what actually moves the view. switch-client is a no-op when
+// no client is attached (a server driven over ssh, a detached test server), and
+// select-pane alone only sets the active pane of a window you are not looking
+// at — so without select-window, focusing an agent in another window appears to
+// do nothing.
 func (s Server) SelectPane(paneID string) {
 	s.Run("switch-client", "-t", paneID)
+	s.Run("select-window", "-t", paneID)
 	s.Run("select-pane", "-t", paneID)
 }
 

@@ -27,17 +27,70 @@ const (
 )
 
 type model struct {
-	srv     tmux.Server
-	results []detect.Result
-	cursor  int
-	width   int
-	spin    spinner.Model
+	srv           tmux.Server
+	results       []detect.Result
+	cursor        int
+	width         int
+	spin          spinner.Model
+	focusPane     string // last pane we tried to sync the cursor to
+	focusResolved bool   // whether focusPane was found in the agent list
 }
 
 // newModel builds a client model with the working spinner ready to animate.
 func newModel(srv tmux.Server) model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	return model{srv: srv, spin: s}
+}
+
+// indexOfPane returns the result index for a pane id, or -1.
+func (m model) indexOfPane(paneID string) int {
+	for i, r := range m.results {
+		if r.PaneID == paneID {
+			return i
+		}
+	}
+	return -1
+}
+
+// clampCursor keeps the cursor on a real row whenever there are agents, so the
+// ">" marker never simply vanishes; -1 is only possible with no results.
+func (m *model) clampCursor() {
+	if len(m.results) == 0 {
+		m.cursor = -1
+		return
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
+	if m.cursor >= len(m.results) {
+		m.cursor = len(m.results) - 1
+	}
+}
+
+// syncFocus moves the cursor onto the focused pane's row, but only when the
+// focus actually moved to an agent pane.
+//
+// Two bugs came from doing this unconditionally on every state push: the daemon
+// pushes every 500ms, so a manual j/k selection was wiped immediately, and
+// pointing at the sidebar pane itself (which is what happens as soon as you
+// click the sidebar to use it, and it is not an agent) set the cursor to -1 and
+// hid the marker.
+//
+// focusResolved keeps the first sync honest: on startup the focused pane is
+// known before the agent list is, so without it focusPane would be recorded
+// once, never resolved to a row, and the marker would sit on row 0.
+func (m *model) syncFocus() {
+	cp := m.srv.CurrentPane()
+	if cp != "" && !(cp == m.focusPane && m.focusResolved) {
+		m.focusPane = cp
+		if i := m.indexOfPane(cp); i >= 0 {
+			m.cursor = i
+			m.focusResolved = true
+		} else {
+			m.focusResolved = false
+		}
+	}
+	m.clampCursor()
 }
 
 func waitForSignal() tea.Msg {
@@ -59,37 +112,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stateUIMsg:
 		m.results = msg.Results
-		if cp := m.srv.CurrentPane(); cp != "" {
-			found := false
-			for i, r := range m.results {
-				if r.PaneID == cp {
-					m.cursor = i
-					found = true
-					break
-				}
-			}
-			if !found {
-				m.cursor = -1
-			}
-		}
+		m.syncFocus()
 	case tickMsg:
 		m.results = detect.Detect(m.srv)
-		if cp := m.srv.CurrentPane(); cp != "" {
-			found := false
-			for i, r := range m.results {
-				if r.PaneID == cp {
-					m.cursor = i
-					found = true
-					break
-				}
-			}
-			if !found {
-				m.cursor = -1
-			}
-		}
-		if m.cursor >= len(m.results) && len(m.results) > 0 {
-			m.cursor = len(m.results) - 1
-		}
+		m.syncFocus()
 		return m, tea.Batch(tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }), func() tea.Msg { return waitForSignal() })
 	case spinner.TickMsg:
 		// Advance only the spinner animation; never re-run detection here.
@@ -103,15 +129,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "j", "down", "ctrl+n":
-			if m.cursor < len(m.results)-1 {
-				m.cursor++
-			}
+			m.cursor++
+			m.clampCursor()
 		case "k", "up", "ctrl+p":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor--
+			m.clampCursor()
 		case "enter":
-			if len(m.results) > 0 && m.cursor < len(m.results) {
+			if m.cursor >= 0 && m.cursor < len(m.results) {
 				m.srv.FocusPane(m.results[m.cursor].PaneID)
 			}
 		}

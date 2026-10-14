@@ -459,6 +459,58 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		}
 		return nil
 	})
+	s.Step(`^I focus the sidebar pane$`, func(ctx context.Context) error {
+		// Focusing the sidebar is what a user does to press j/k; the focused pane
+		// is then not an agent, which used to make the marker vanish.
+		sb, err := cur.env.SidebarPane()
+		if err != nil {
+			return err
+		}
+		if err := cur.env.SelectPane(sb); err != nil {
+			return err
+		}
+		// let a state push land so the client re-syncs and re-renders
+		time.Sleep(700 * time.Millisecond)
+		return nil
+	})
+	s.Step(`^the sidebar should still show a selection marker$`, func(ctx context.Context) error {
+		rows, err := cur.env.SidebarMarked()
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			content, _ := cur.env.SidebarContent()
+			return fmt.Errorf("the selection marker vanished\n%s", content)
+		}
+		return nil
+	})
+	s.Step(`^I press the "([^"]*)" key in the sidebar$`, func(ctx context.Context, key string) error {
+		sb, err := cur.env.SidebarPane()
+		if err != nil {
+			return err
+		}
+		if err := cur.env.SendKeys(sb, key); err != nil {
+			return err
+		}
+		time.Sleep(400 * time.Millisecond)
+		return nil
+	})
+	s.Step(`^I wait (\d+)ms$`, func(ctx context.Context, ms int) error {
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		return nil
+	})
+	s.Step(`^window "([^"]*)" should be the active window of session "([^"]*)"$`, func(ctx context.Context, win, sess string) error {
+		return eventually(2*time.Second, func() error {
+			got, err := cur.env.CurrentWindow(sess)
+			if err != nil {
+				return err
+			}
+			if got != win {
+				return fmt.Errorf("session %s is on window %q, want %q", sess, got, win)
+			}
+			return nil
+		})
+	})
 	s.Step(`^the sidebar should select window "([^"]*)" within (\d+)ms$`, func(ctx context.Context, win string, ms int) error {
 		deadline := time.Now().Add(time.Duration(ms) * time.Millisecond)
 		var last string
