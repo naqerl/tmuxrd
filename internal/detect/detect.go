@@ -102,6 +102,14 @@ func classifyTail(tail string) State {
 }
 
 
+func isShell(s string) bool {
+	switch strings.ToLower(s) {
+	case "bash", "zsh", "fish", "sh", "dash":
+		return true
+	}
+	return false
+}
+
 func foregroundCommand(shellPid string) string {
 	pid, err := strconv.Atoi(shellPid)
 	if err != nil || pid <= 0 {
@@ -116,12 +124,26 @@ func foregroundCommand(shellPid string) string {
 		return ""
 	}
 	fields := strings.Fields(string(stat)[r+2:])
-	// after ): state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
 	if len(fields) < 6 {
+		return ""
+	}
+	if fields[0] == "Z" || fields[0] == "X" {
 		return ""
 	}
 	tpgid, err := strconv.Atoi(fields[5])
 	if err != nil || tpgid <= 0 {
+		return ""
+	}
+	targetStat, err := os.ReadFile(fmtProc(tpgid) + "/stat")
+	if err != nil {
+		return ""
+	}
+	tr := strings.LastIndex(string(targetStat), ")")
+	if tr < 0 || tr+2 >= len(targetStat) {
+		return ""
+	}
+	tfields := strings.Fields(string(targetStat)[tr+2:])
+	if len(tfields) == 0 || tfields[0] == "Z" || tfields[0] == "X" {
 		return ""
 	}
 	data, err := os.ReadFile(fmtProc(tpgid) + "/comm")
@@ -154,11 +176,9 @@ func Detect() []Result {
 		}
 		screen := tmux.Capture(p.ID)
 		st := classifyTail(screen)
-		if fc := foregroundCommand(p.PID); fc != "" {
-			lc := strings.ToLower(fc)
-			if lc == "bash" || lc == "zsh" || lc == "fish" || lc == "sh" || lc == "dash" {
-				st = Idle
-			}
+		fc := foregroundCommand(p.PID)
+		if fc == "" || isShell(fc) {
+			st = Idle
 		}
 		out = append(out, Result{PaneID: p.ID, Agent: agent, State: st, Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName})
 	}
