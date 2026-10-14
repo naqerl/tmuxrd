@@ -110,13 +110,14 @@ func (m model) View() string {
 			if home, _ := os.UserHomeDir(); home != "" {
 				pth = strings.Replace(pth, home, "~", 1)
 			}
-			circle := statusCircle(r.State)
-			line := fmt.Sprintf("   %s  %-8s %s", circle, r.Agent, pth)
 			if gi == m.cursor {
+				line := fmt.Sprintf("   %s  %-8s %s", "●", r.Agent, pth)
 				w := m.width
 				if w <= 0 { w = 32 }
 				s += selStyle.Width(w).Render(line) + "\n"
 			} else {
+				circle := statusCircle(r.State)
+				line := fmt.Sprintf("   %s  %-8s %s", circle, r.Agent, pth)
 				s += line + "\n"
 			}
 		}
