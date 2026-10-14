@@ -16,7 +16,12 @@ type Pane struct {
 }
 
 func Run(args ...string) (string, error) {
-	out, err := exec.Command("tmux", args...).Output()
+	cmdArgs := []string{}
+	if v := os.Getenv("TERDR_TMUX_SOCKET"); v != "" {
+		cmdArgs = append(cmdArgs, "-L", v)
+	}
+	cmdArgs = append(cmdArgs, args...)
+	out, err := exec.Command("tmux", cmdArgs...).Output()
 	return strings.TrimRight(string(out), "\n"), err
 }
 
