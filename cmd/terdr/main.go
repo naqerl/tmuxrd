@@ -68,17 +68,17 @@ var (
 	}
 )
 
-func glyph(s detect.State) string {
+func statusCircle(s detect.State) string {
+	st := stateStyle[s]
+	circle := "●"
 	switch s {
 	case detect.Idle:
-		return "✅"
 	case detect.Working:
-		return "⚙"
 	case detect.Blocked:
-		return "⛔"
-	default:
-		return "·"
+	case detect.Unknown:
+		circle = "○"
 	}
+	return st.Render(circle)
 }
 
 func (m model) View() string {
@@ -106,10 +106,14 @@ func (m model) View() string {
 		s += lipgloss.NewStyle().Bold(true).Render(" "+sess) + "\n"
 		for _, gi := range groups[sess] {
 			r := m.results[gi]
-			line := fmt.Sprintf("   %s %-7s %s  %s", glyph(r.State), r.Agent, r.State, r.Path)
-			suff := ""
+			pth := r.Path
+			if home, _ := os.UserHomeDir(); home != "" {
+				pth = strings.Replace(pth, home, "~", 1)
+			}
+			circle := statusCircle(r.State)
+			line := fmt.Sprintf("   %s  %-8s %s", circle, r.Agent, pth)
 			if gi == m.cursor {
-				s += selStyle.Render(line+suff) + "\n"
+				s += selStyle.Render(line) + "\n"
 			} else {
 				s += line + "\n"
 			}
