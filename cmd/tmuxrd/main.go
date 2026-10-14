@@ -219,25 +219,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var (
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	lineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	stateStyle = map[detect.State]lipgloss.Style{
-		detect.Idle:    lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
-		detect.Working: lipgloss.NewStyle().Foreground(lipgloss.Color("3")),
-		detect.Blocked: lipgloss.NewStyle().Foreground(lipgloss.Color("1")),
-		detect.Unknown: lipgloss.NewStyle().Foreground(lipgloss.Color("8")),
-	}
+// The sidebar is its own visual surface on both form factors: a solid bar
+// background so it stands out from the agent pane, agent rows on a secondary
+// background, and the selected one on the accent. The mobile strip lays these
+// out horizontally (one padded "tab" per agent); the desktop sidebar stacks
+// them as full-width rows.
+const (
+	barBg    lipgloss.Color = "236"
+	rowBg    lipgloss.Color = "239"
+	rowSelBg lipgloss.Color = "62"
 )
 
-// The mobile strip is its own visual surface: a full-width bar with a
-// background of its own, and one padded "tab" per agent. A tab's accent
-// background is the mobile selection marker — the desktop's ">" is too small
-// to pick out on a phone.
 var (
-	stripBarStyle = lipgloss.NewStyle().Background(lipgloss.Color("236")).Foreground(lipgloss.Color("250"))
-	tabStyle      = lipgloss.NewStyle().Background(lipgloss.Color("239")).Foreground(lipgloss.Color("253"))
-	tabSelStyle   = lipgloss.NewStyle().Background(lipgloss.Color("62")).Foreground(lipgloss.Color("231")).Bold(true)
+	barStyle       = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("250"))
+	barTitleStyle  = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("252")).Bold(true)
+	barRuleStyle   = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("240"))
+	barHeaderStyle = lipgloss.NewStyle().Background(barBg).Foreground(lipgloss.Color("245")).Bold(true)
+	tabStyle       = lipgloss.NewStyle().Background(rowBg).Foreground(lipgloss.Color("253"))
+	tabSelStyle    = lipgloss.NewStyle().Background(rowSelBg).Foreground(lipgloss.Color("231")).Bold(true)
 )
 
 // workedLabel renders how long the agent has been working on this run, e.g.
@@ -267,23 +266,6 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", m)
 	}
 	return fmt.Sprintf("%dm%ds", m, rem)
-}
-
-func statusCircle(s detect.State, spinView string) string {
-	st := stateStyle[s]
-	switch s {
-	case detect.Working:
-		// Animated braille spinner (same family pi uses) for active work.
-		return st.Render(strings.TrimRight(spinView, " "))
-	case detect.Blocked:
-		// The agent is waiting on the user.
-		return st.Render("?")
-	case detect.Idle, detect.Unknown:
-		// Stale / idle / unknown: a quiet empty circle.
-		return st.Render("○")
-	default:
-		return st.Render("○")
-	}
 }
 
 // stateGlyph is the raw glyph for a state, with no colour of its own, so a tab
@@ -354,62 +336,103 @@ func (m model) sessionGroups() ([]string, map[string][]int) {
 	return sessions, groups
 }
 
-// sideView is the desktop sidebar: a title, a rule, then one row per agent.
+// sideView is the desktop sidebar: a title, a rule, then one full-width row per
+// agent, all on the sidebar's own background so the pane reads as one coloured
+// block (the same palette as the mobile strip).
 func (m model) sideView() string {
-	line := "─"
-	if m.width > 0 {
-		line = strings.Repeat("─", m.width)
+	width := m.width
+	if width <= 0 {
+		width = 32
 	}
-	s := titleStyle.Render("tmuxrd") + "\n" + lineStyle.Render(line) + "\n"
+	lines := []string{
+		barTitleStyle.Render("tmuxrd"),
+		barRuleStyle.Render(strings.Repeat("─", width)),
+	}
 	sessions, groups := m.sessionGroups()
 	for _, sess := range sessions {
-		s += lipgloss.NewStyle().Bold(true).Render(sess) + "\n"
+		lines = append(lines, barHeaderStyle.Render(sess))
 		for _, gi := range groups[sess] {
 			r := m.results[gi]
-			pth := r.Path
-			if pth != "" {
-				parts := strings.Split(strings.TrimRight(pth, "/"), "/")
-				pth = parts[len(parts)-1]
-				if pth == "" {
-					pth = "/"
-				}
-			}
-			// Show a directory as "name/ ": the slash marks it as a directory,
-			// and the trailing space keeps it off the pane divider.
-			if pth != "" {
-				if strings.HasSuffix(pth, "/") {
-					pth += " "
-				} else {
-					pth += "/ "
-				}
-			}
-			circle := statusCircle(r.State, m.spin.View())
-			mark := " "
-			if m.cursor >= 0 && gi == m.cursor {
-				mark = ">"
-			}
 			label := r.Agent
 			if r.WindowName != "" && r.WindowName != r.Agent {
 				label = r.WindowName + " (" + r.Agent + ")"
 			}
-			left := fmt.Sprintf("%s %s %s:%-12s", mark, circle, r.Window, label)
+			left := fmt.Sprintf(" %s:%-12s", r.Window, label)
 			if t := workedLabel(r); t != "" {
 				left += " " + t
 			}
-			line := left + " " + pth
-			if m.width > 0 {
-				// Measure *visible* width (ignore ANSI colour codes) so the styled
-				// glyph doesn't skew the right-hand path alignment.
-				lw := ansi.StringWidth(left)
-				pw := ansi.StringWidth(pth)
-				if lw+1+pw <= m.width {
-					line = left + strings.Repeat(" ", m.width-lw-pw) + pth
-				}
+			selected := m.cursor >= 0 && gi == m.cursor
+			lead := " "
+			if selected {
+				lead = ">"
 			}
-			s += line + "\n"
+			lines = append(lines, m.renderSideRow(r, selected, lead, left, sidePath(r.Path)))
 		}
 	}
-	return s
+	return padSideBar(lines, width, m.height)
+}
+
+// renderSideRow draws one agent as a full-width row: the bar behind it, the
+// row's own background under the text, and the accent when selected. The glyph
+// keeps its state colour, so the row is assembled from separately rendered
+// segments — nesting a styled glyph inside a styled row would let the glyph's
+// reset cancel the row background.
+func (m model) renderSideRow(r detect.Result, selected bool, lead, left, path string) string {
+	rowStyle := tabStyle
+	bg := lipgloss.TerminalColor(rowBg)
+	if selected {
+		rowStyle = tabSelStyle
+		bg = rowSelBg
+	}
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State))
+	out := rowStyle.Render(lead+" ") +
+		glyph.Render(stateGlyph(r.State, m.spin.View())) +
+		rowStyle.Render(left)
+	if m.width > 0 {
+		// Right-align the path, then fill the rest of the width with the row's
+		// background so the row is a solid block.
+		pw := ansi.StringWidth(path)
+		if w := ansi.StringWidth(out); w+1+pw <= m.width {
+			out += rowStyle.Render(strings.Repeat(" ", m.width-w-pw)) + rowStyle.Render(path)
+		} else {
+			out += rowStyle.Render(" " + path)
+		}
+		if w := ansi.StringWidth(out); w < m.width {
+			out += rowStyle.Render(strings.Repeat(" ", m.width-w))
+		}
+	}
+	return out
+}
+
+// padSideBar fills the sidebar to the pane width and height with the bar
+// background, so the whole pane is one coloured block rather than coloured text
+// on the terminal's own background.
+func padSideBar(lines []string, width, height int) string {
+	for i, l := range lines {
+		if w := ansi.StringWidth(l); w < width {
+			lines[i] = l + barStyle.Render(strings.Repeat(" ", width-w))
+		}
+	}
+	if height > 0 {
+		for len(lines) < height {
+			lines = append(lines, barStyle.Render(strings.Repeat(" ", width)))
+		}
+		if len(lines) > height {
+			lines = lines[:height]
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// sidePath renders a pane path the desktop way: the last element with a
+// trailing slash (so directories are recognisable) and a trailing space to keep
+// it off the pane divider.
+func sidePath(pth string) string {
+	p := baseName(pth)
+	if p == "" {
+		return ""
+	}
+	return p + " "
 }
 
 // stripBarPad pads a strip line to the pane width with the bar's background,
@@ -422,7 +445,7 @@ func stripBarPad(s string, width int) string {
 		s = ansi.Truncate(s, width, "…")
 	}
 	if w := ansi.StringWidth(s); w < width {
-		s += stripBarStyle.Render(strings.Repeat(" ", width-w))
+		s += barStyle.Render(strings.Repeat(" ", width-w))
 	}
 	return s
 }
@@ -435,10 +458,10 @@ func stripBarPad(s string, width int) string {
 func (m model) renderTab(i int) string {
 	r := m.results[i]
 	tab := tabStyle
-	bg := lipgloss.TerminalColor(lipgloss.Color("239"))
+	bg := lipgloss.TerminalColor(rowBg)
 	if i == m.cursor {
 		tab = tabSelStyle
-		bg = lipgloss.Color("62")
+		bg = rowSelBg
 	}
 	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State))
 	return tab.Render(" ") + glyph.Render(stateGlyph(r.State, m.spin.View())) + tab.Render(" "+r.Agent+" ")
@@ -458,7 +481,7 @@ func (m model) stripView() string {
 	chips, _ := m.stripChipLayout()
 	lines := []string{chips}
 	if m.height >= 2 {
-		lines = append(lines, stripBarPad(stripBarStyle.Render(m.stripDetail()), m.width))
+		lines = append(lines, stripBarPad(barStyle.Render(m.stripDetail()), m.width))
 	}
 	h := m.height
 	if h <= 0 {
@@ -492,7 +515,7 @@ func (m model) stripChips() string {
 // its own padding), which is what makes the row read as a tab bar.
 func (m model) stripChipLayout() (string, []chipSpan) {
 	if len(m.results) == 0 {
-		return stripBarPad(stripBarStyle.Render(" no agents"), m.width), nil
+		return stripBarPad(barStyle.Render(" no agents"), m.width), nil
 	}
 
 	// Fit a contiguous run of tabs around the selection. Reserve two columns for
@@ -523,7 +546,7 @@ func (m model) stripChipLayout() (string, []chipSpan) {
 	spans := make([]chipSpan, 0, hi-lo+1)
 	x := 0
 	if lo > 0 {
-		b.WriteString(stripBarStyle.Render("‹ "))
+		b.WriteString(barStyle.Render("‹ "))
 		x += 2
 	}
 	for i := lo; i <= hi; i++ {
@@ -533,12 +556,12 @@ func (m model) stripChipLayout() (string, []chipSpan) {
 		spans = append(spans, chipSpan{index: i, start: start, end: x})
 	}
 	if hi < len(m.results)-1 {
-		b.WriteString(stripBarStyle.Render(" ›"))
+		b.WriteString(barStyle.Render(" ›"))
 		x += 2
 	}
 	out := b.String()
 	if m.width > 0 && x < m.width {
-		out += stripBarStyle.Render(strings.Repeat(" ", m.width-x))
+		out += barStyle.Render(strings.Repeat(" ", m.width-x))
 	}
 	return out, spans
 }

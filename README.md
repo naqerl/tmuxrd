@@ -125,10 +125,13 @@ fits (`window-size latest`, tmux's default):
 
 - **60 columns or more** — a 32-column left sidebar that lists one row per agent.
 - **fewer than 60 columns** — a **2-row full-width strip across the top**, because on a phone
-  columns are the scarce resource and rows are not. The strip is its own surface: a full-width bar
-  with an alternate background, on which each agent is a padded **tab**; the selected tab is
-  highlighted (that highlight replaces the desktop sidebar's `>`). Row 2 describes the selected
-  agent. `1`–`9` switch to an agent in one keystroke.
+  columns are the scarce resource and rows are not. The strip lays the agents out as padded
+  **tabs**; row 2 describes the selected agent. `1`–`9` switch to an agent in one keystroke.
+
+Both form factors share the same palette: the sidebar has a background of its own so it stands out
+from the agent pane, each agent row/tab sits on a secondary background, the row/tab you are looking
+at is highlighted on an accent background, and the rest of the pane is filled with the sidebar
+background. (The desktop rows keep a `>` as well; the mobile strip uses the accent alone.)
 
 The shape is re-checked every time the window resizes and by the daemon (every tick), so attaching
 from a phone flips the sidebar to the strip and attaching from a desktop flips it back. A window
