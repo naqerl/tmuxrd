@@ -148,9 +148,11 @@ func (m model) View() string {
 		s += lipgloss.NewStyle().Bold(true).Render(" "+sess) + "\n"
 		for _, gi := range groups[sess] {
 			r := m.results[gi]
-			pth := abbreviatePath(r.Path)
-			if home, _ := os.UserHomeDir(); home != "" {
-				pth = strings.Replace(pth, home, "~", 1)
+			pth := r.Path
+			if pth != "" {
+				parts := strings.Split(strings.TrimRight(pth, "/"), "/")
+				pth = parts[len(parts)-1]
+				if pth == "" { pth = "/" }
 			}
 			circle := statusCircle(r.State)
 			mark := " "
