@@ -253,8 +253,15 @@ socket. The sidebar panes run `tmuxrd client`, which only draws; `tmuxenv` and `
 the harness that runs the real daemon and client against an isolated server in the tests.
 
 A [citydiff](https://github.com/naqerl/citydiff) tour walks that split step by step — dependency
-level, declarations, then call paths — over the `v0.2.0..v0.3.0` range:
-<https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-how-the-sidebar-knows>
+level, declarations, then call paths. Two are published on the hub at
+<https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/>:
+
+- **tmuxrd: how the sidebar knows** (`v0.2.0..v0.3.0`) — the daemon/client split, the tmux
+  boundary, inferred state, the pi question rule, the finished pin, the glyph layer and the test
+  harness: <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-how-the-sidebar-knows>
+- **tmuxrd: one detector per agent** (`v0.3.0..v0.4.0`) — the `AgentDetector` registry, the state
+  iota, pi's rules extracted, the GrokDetector and its captures, and the fake agent that draws
+  per-persona screens: <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-one-detector-per-agent>
 
 ## Commands
 
