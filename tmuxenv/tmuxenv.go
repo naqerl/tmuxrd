@@ -142,10 +142,33 @@ func (e *Env) writeFake(name string) error {
 // PATH returns the fake-bin-augmented PATH for child processes.
 func (e *Env) PATH() string { return e.BinDir + ":" + os.Getenv("PATH") }
 
+// env builds the environment for every tmux command and, through the server's
+// global environment, for the panes themselves.
+//
+// The sidebar's selection is the accent background, so the suite asserts ANSI
+// colours — a desktop row has no `>` pointer to look for anymore. lipgloss
+// honours NO_COLOR / CLICOLOR=0 (and a CI runner may set one) by rendering plain
+// text, which would fail every selection assertion for a reason that has nothing
+// to do with the client. So the harness drops those opt-outs and forces colour
+// on: the suite pins the palette, and it can only do that in a colour-capable,
+// colour-enabled environment — which is what a real tmux user has.
+func (e *Env) env(extra ...string) []string {
+	out := make([]string, 0, len(os.Environ())+len(extra)+2)
+	for _, kv := range os.Environ() {
+		switch strings.SplitN(kv, "=", 2)[0] {
+		case "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR":
+			continue
+		}
+		out = append(out, kv)
+	}
+	out = append(out, "PATH="+e.PATH(), "CLICOLOR_FORCE=1")
+	return append(out, extra...)
+}
+
 // run executes a tmux command with PATH set to see the fake agents.
 func (e *Env) run(args ...string) (string, error) {
 	cmd := exec.Command("tmux", append([]string{"-L", e.Socket}, args...)...)
-	cmd.Env = append(os.Environ(), "PATH="+e.PATH())
+	cmd.Env = e.env()
 	out, err := cmd.CombinedOutput()
 	return strings.TrimRight(string(out), "\n"), err
 }
@@ -242,7 +265,7 @@ func (e *Env) SetAgentState(sess, win, state string) error {
 // unaffected. The client stays attached until Close, which kills it.
 func (e *Env) AttachClient(sess string) error {
 	cmd := exec.Command("tmux", "-L", e.Socket, "-C", "attach", "-t", sess)
-	cmd.Env = append(os.Environ(), "PATH="+e.PATH())
+	cmd.Env = e.env()
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	// A pipe on stdin is what keeps a control client alive: EOF ends it. The
@@ -345,8 +368,7 @@ func (e *Env) SourceConfig() error {
 			e.Socket, tmux.EnvVar, got, e.Socket)
 	}
 	cmd := exec.Command("tmux", "-L", e.Socket, "source-file", e.Config)
-	cmd.Env = append(os.Environ(),
-		"PATH="+e.PATH(),
+	cmd.Env = e.env(
 		"TERDR_TMUX_SOCKET="+e.Socket,
 		"XDG_RUNTIME_DIR="+e.runtimeDir(),
 	)
@@ -374,11 +396,20 @@ func (e *Env) ensureClientEnv() error {
 	for _, kv := range [][2]string{
 		{tmux.EnvVar, e.Socket},
 		{"XDG_RUNTIME_DIR", rt},
+		// Panes are created later by the scripts and inherit this global
+		// environment; forcing colour here keeps the palette assertions valid
+		// even if the server was seeded some other way.
+		{"CLICOLOR_FORCE", "1"},
 	} {
 		if _, err := e.Server.Run("set-environment", "-g", kv[0], kv[1]); err != nil {
 			return fmt.Errorf("set-environment %s: %w", kv[0], err)
 		}
 	}
+	// A colour opt-out in the inherited environment would defeat that: drop it
+	// from the server's global environment so it never reaches a client pane.
+	// (Non-fatal: unsetting a variable the server never had is not an error we
+	// care about.)
+	e.Server.Run("set-environment", "-gu", "NO_COLOR")
 	// The config resolves every path from @tmuxrd_root, so it must point at this
 	// checkout before the config is sourced.
 	if _, err := e.Server.Run("set-option", "-gq", "@tmuxrd_root", e.Root); err != nil {
@@ -450,8 +481,7 @@ func (e *Env) DaemonPIDs() []int {
 // TERDR_TMUX_SOCKET so it operates on our socket only.
 func (e *Env) runScript(name string) error {
 	cmd := exec.Command("bash", filepath.Join(e.Scripts, name))
-	cmd.Env = append(os.Environ(),
-		"PATH="+e.PATH(),
+	cmd.Env = e.env(
 		"TERDR_TMUX_SOCKET="+e.Socket,
 		"XDG_RUNTIME_DIR="+e.runtimeDir(),
 	)
@@ -484,8 +514,7 @@ func (e *Env) CleanupOrphans() error { return e.runScript("cleanup_orphans.sh") 
 // RunBin invokes the tmuxrd binary (summary/client) against this server.
 func (e *Env) RunBin(args ...string) (string, error) {
 	cmd := exec.Command(e.Bin, args...)
-	cmd.Env = append(os.Environ(),
-		"PATH="+e.PATH(),
+	cmd.Env = e.env(
 		"TERDR_TMUX_SOCKET="+e.Socket,
 		"XDG_RUNTIME_DIR="+e.runtimeDir(),
 	)
@@ -501,8 +530,7 @@ func (e *Env) StartDaemon() error {
 		return nil
 	}
 	cmd := exec.Command(e.Bin, "daemon")
-	cmd.Env = append(os.Environ(),
-		"PATH="+e.PATH(),
+	cmd.Env = e.env(
 		"TERDR_TMUX_SOCKET="+e.Socket,
 		"XDG_RUNTIME_DIR="+e.runtimeDir(),
 	)
