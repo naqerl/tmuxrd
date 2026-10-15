@@ -224,6 +224,18 @@ capture: a `screen` column in an `agent windows` table makes the fake agent rend
 verbatim (`fakeagent -screen-file`), which is how `features/testdata/pi-question-2026-10-15.txt`
 — a verbatim `tmux capture-pane -p` of a live pi question — is asserted against.
 
+## Architecture
+
+The pieces, and the split between them: a daemon in `cmd/tmuxrd` is the only writer — it polls
+`internal/tmux` (the single tmux boundary) every 500 ms, turns each screen into a state with
+`internal/detect`, reshapes sidebars with `internal/layout`, and pushes snapshots down a Unix
+socket. The sidebar panes run `tmuxrd client`, which only draws; `tmuxenv` and `cmd/fakeagent` are
+the harness that runs the real daemon and client against an isolated server in the tests.
+
+A [citydiff](https://github.com/naqerl/citydiff) tour walks that split step by step — dependency
+level, declarations, then call paths — over the `v0.2.0..v0.3.0` range:
+<https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-how-the-sidebar-knows>
+
 ## Commands
 
 | Command | Purpose |
