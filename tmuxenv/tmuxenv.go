@@ -887,14 +887,14 @@ func (e *Env) DetectBySession() map[string][]detect.Result {
 }
 
 // Summary runs `tmuxrd summary` and parses the counts.
-func (e *Env) Summary() (agents, idle, working, blocked int, err error) {
+func (e *Env) Summary() (agents, idle, working, blocked, finished int, err error) {
 	out, err := e.RunBin("summary")
 	if err != nil {
 		return
 	}
-	// agents=%d idle=%d working=%d blocked=%d
-	fmt.Sscanf(out, "agents=%d idle=%d working=%d blocked=%d",
-		&agents, &idle, &working, &blocked)
+	// agents=%d idle=%d working=%d blocked=%d finished=%d
+	fmt.Sscanf(out, "agents=%d idle=%d working=%d blocked=%d finished=%d",
+		&agents, &idle, &working, &blocked, &finished)
 	return
 }
 

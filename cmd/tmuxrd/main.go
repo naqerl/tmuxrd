@@ -268,19 +268,18 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm%ds", m, rem)
 }
 
-// stateGlyph is the raw glyph for a result: the working spinner, "?" while the
-// agent waits on the user, "✓" once it has finished a run, and "○" only for an
-// agent that has never started (a new session) — see Result.Finished. Blocked
-// wins over finished: a question needs the eye more than a completed run does.
-// The glyph carries no colour of its own, so a tab can colour it against the
-// tab's background.
-func stateGlyph(r detect.Result, spinView string) string {
-	switch {
-	case r.State == detect.Working:
+// stateGlyph is the raw glyph for a state. The order is the display order:
+// a live turn first, then a question (which needs the eye most), then the
+// finished pin, then the empty circle for a pane that never started. The glyph
+// carries no colour of its own, so a tab can colour it against the tab's
+// background.
+func stateGlyph(s detect.State, spinView string) string {
+	switch s {
+	case detect.Working:
 		return strings.TrimRight(spinView, " ")
-	case r.State == detect.Blocked:
+	case detect.Blocked:
 		return "?"
-	case r.Finished:
+	case detect.Finished:
 		return "✓"
 	default:
 		return "○"
@@ -293,16 +292,16 @@ func stateGlyph(r detect.Result, spinView string) string {
 // selected row). Unselected rows keep the state signal: blocked bright red,
 // finished bright green, working the row foreground; an agent that has never
 // started is a quiet grey — a neutral state, not a success.
-func stateColor(r detect.Result, selected bool) lipgloss.TerminalColor {
+func stateColor(s detect.State, selected bool) lipgloss.TerminalColor {
 	if selected {
 		return rowSelFg
 	}
-	switch {
-	case r.State == detect.Working:
+	switch s {
+	case detect.Working:
 		return rowFg
-	case r.State == detect.Blocked:
+	case detect.Blocked:
 		return lipgloss.ANSIColor(9) // bright red
-	case r.Finished:
+	case detect.Finished:
 		return lipgloss.ANSIColor(10) // bright green
 	default:
 		return lipgloss.ANSIColor(8) // quiet grey: never started
@@ -396,9 +395,9 @@ func (m model) renderSideRow(r detect.Result, selected bool, left, path string) 
 		rowStyle = tabSelStyle
 		bg = rowSelBg
 	}
-	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r, selected))
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State, selected))
 	out := rowStyle.Render(" ") +
-		glyph.Render(stateGlyph(r, m.spin.View())) +
+		glyph.Render(stateGlyph(r.State, m.spin.View())) +
 		rowStyle.Render(left)
 	if m.width > 0 {
 		// Right-align the path, then fill the rest of the width with the row's
@@ -475,14 +474,14 @@ func (m model) renderTab(i int) string {
 		tab = tabSelStyle
 		bg = rowSelBg
 	}
-	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r, i == m.cursor))
-	return tab.Render(" ") + glyph.Render(stateGlyph(r, m.spin.View())) + tab.Render(" "+r.Agent+" ")
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State, i == m.cursor))
+	return tab.Render(" ") + glyph.Render(stateGlyph(r.State, m.spin.View())) + tab.Render(" "+r.Agent+" ")
 }
 
 // tabWidth is the visible width renderTab occupies.
 func (m model) tabWidth(i int) int {
 	r := m.results[i]
-	return 3 + ansi.StringWidth(stateGlyph(r, m.spin.View())) + ansi.StringWidth(r.Agent)
+	return 3 + ansi.StringWidth(stateGlyph(r.State, m.spin.View())) + ansi.StringWidth(r.Agent)
 }
 
 // stripView renders the mobile strip: a full-width row of agent tabs, and a
@@ -595,16 +594,8 @@ func (m model) stripChipAt(x int) (int, bool) {
 func (m model) stripDetail() string {
 	if m.cursor < 0 || m.cursor >= len(m.results) {
 		counts := map[detect.State]int{}
-		done, fresh := 0, 0
 		for _, r := range m.results {
 			counts[r.State]++
-			switch {
-			case r.State == detect.Working || r.State == detect.Blocked:
-			case r.Finished:
-				done++
-			default:
-				fresh++
-			}
 		}
 		parts := []string{fmt.Sprintf("%d agents", len(m.results))}
 		if n := counts[detect.Working]; n > 0 {
@@ -613,10 +604,10 @@ func (m model) stripDetail() string {
 		if n := counts[detect.Blocked]; n > 0 {
 			parts = append(parts, fmt.Sprintf("?%d", n))
 		}
-		if done > 0 {
-			parts = append(parts, fmt.Sprintf("✓%d", done))
+		if n := counts[detect.Finished]; n > 0 {
+			parts = append(parts, fmt.Sprintf("✓%d", n))
 		}
-		if fresh > 0 {
+		if fresh := len(m.results) - counts[detect.Working] - counts[detect.Blocked] - counts[detect.Finished]; fresh > 0 {
 			parts = append(parts, fmt.Sprintf("○%d", fresh))
 		}
 		return strings.Join(parts, "  ")
@@ -630,7 +621,7 @@ func (m model) stripDetail() string {
 	if p := baseName(r.Path); p != "" {
 		parts = append(parts, p)
 	}
-	parts = append(parts, string(r.State))
+	parts = append(parts, r.State.String())
 	if t := workedLabel(r); t != "" {
 		parts = append(parts, t)
 	}
@@ -668,7 +659,7 @@ func main() {
 		for _, r := range results {
 			c[r.State]++
 		}
-		fmt.Printf("agents=%d idle=%d working=%d blocked=%d\n", len(results), c[detect.Idle], c[detect.Working], c[detect.Blocked])
+		fmt.Printf("agents=%d idle=%d working=%d blocked=%d finished=%d\n", len(results), c[detect.Idle], c[detect.Working], c[detect.Blocked], c[detect.Finished])
 	case "daemon":
 		cmdDaemon()
 	case "adapt":

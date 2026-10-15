@@ -114,10 +114,15 @@ func cmdDaemon() {
 			// The pin is consumed by looking: if the agent's window is the one a
 			// client is displaying, an unseen result no longer exists. Cleared
 			// before the working branch so an agent that works and stops in the
-			// window you are watching never flashes a ✓ for a tick.
-			if r.Viewed && r.Finished {
+			// window you are watching never flashes a ✓ for a tick. Detect has
+			// already promoted an idle pinned pane to Finished, so the state is
+			// put back to Idle here rather than recomputed.
+			if r.Pinned && r.Viewed {
 				srv.UnsetPaneOption(r.PaneID, paneFinishedOption)
-				r.Finished = false
+				r.Pinned = false
+				if r.State == detect.Finished {
+					r.State = detect.Idle
+				}
 			}
 			if r.State == detect.Working {
 				// The agent has done work: record it on the pane itself so the ✓
@@ -125,9 +130,9 @@ func cmdDaemon() {
 				// the daemon). Detect reads it back from tmux on the next tick,
 				// so this write happens once per pane. A viewed pane is skipped:
 				// the user is seeing this run, so it is not a notification.
-				if !r.Finished && !r.Viewed {
+				if !r.Pinned && !r.Viewed {
 					srv.SetPaneOption(r.PaneID, paneFinishedOption, "1")
-					r.Finished = true
+					r.Pinned = true
 				}
 				if wt.since.IsZero() {
 					// A new working period: start the timer over.

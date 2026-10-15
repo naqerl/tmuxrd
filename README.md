@@ -174,45 +174,63 @@ set -g @tmuxrd_mobile_width 50
 | `@tmuxrd_side_width` | columns the desktop sidebar takes (default `32`) |
 
 tmuxrd does not touch your status line. `tmuxrd summary` is available as a command if you want to
-put a one-line census (`agents=3 idle=1 working=1 blocked=1`) there yourself.
+put a one-line census (`agents=3 idle=1 working=1 blocked=1 finished=1`) there yourself.
 
 ## How state is detected
 
-- **working** — the agent's braille spinner animation is on screen (any Unicode braille frame).
-  Word matching was tried and removed: it fired on ordinary text such as token counters and paths.
-- **blocked (pi)** — pi's `ask-user-question` dialog, matched structurally: the invariant opening
-  of the dialog's hint line, `Enter to select · ↑/↓ to navigate`. Every variant of that dialog
-  leads with those two parts — a multi-select question adds `Space to toggle`, a multi-question
-  one adds `Tab to switch questions`, and `n to add notes` drops while a text input has the
-  keyboard; the Submit tab lists no options at all but is still waiting on you — so the prefix
-  covers them all. It also works in a narrow pane, because the TUI clips the hint line from the
-  right and keeps its prefix (the earlier exact-footer match needed ~110 columns). Options alone
-  are never enough: an agent's own markdown checklist is not a question, and an answered question
-  is rendered into the transcript as a scalar summary, so the hint line does not linger.
-  (The English locale only.)
-- **blocked (other agents)** — a small set of unambiguous prompt strings (`[y/n]`, `yes/no`, …).
-- **idle** — a shell prompt, or a pane whose foreground process is no longer the agent.
+Detection is a registry of **`AgentDetector`** values (`internal/detect`). Every pane is offered to
+each detector in turn as a `View{Command, Screen}` — the pane's resolved process name and its
+visible screen — and the first detector that claims the pane names the agent and its state. A pane
+no detector claims is **not an agent** and never reaches the sidebar, which is what keeps a shell,
+`htop` or a plain `sleep` out of the list. Adding an agent is adding a value to the slice, not
+editing a name list and a `switch`.
 
-On top of the state, the daemon records whether the pane's agent has **worked at all**: the first
-tick it sees a pane working it sets the pane option `@tmuxrd_finished`, and `Detect` reads that
-back. The sidebar draws `✓` for a pane that has worked and is no longer working, and reserves `○`
-for a pane that never started. The marker is a **notification**, so the daemon clears it as soon
-as the pane's window is the current window of a session that has an attached client
-(`tmux.Pane.Viewed`) — what you are looking at needs no pin, and a detached session's current
-window is not "viewed" by anyone, so its pins survive until you attach. The marker is
-deliberately not part of the state machine — an answered question, an idle agent and a finished
-one are all `idle`; only the glyph differs.
+A state is an iota — `Unknown`, `Idle`, `Working`, `Blocked`, `Finished` — rather than a string,
+so the display code switches over a closed set. The rules each detector applies:
+
+- **pi** (`PiDetector`) — blocked is structural: the invariant opening of the `ask-user-question`
+  dialog's hint line, `Enter to select · ↑/↓ to navigate`. Every variant of that dialog leads with
+  those two parts — a multi-select question adds `Space to toggle`, a multi-question one adds `Tab
+  to switch questions`, and `n to add notes` drops while a text input has the keyboard; the Submit
+  tab lists no options at all but is still waiting on you — so the prefix covers them all. It also
+  works in a narrow pane, because the TUI clips the hint line from the right and keeps its prefix
+  (the earlier exact-footer match needed ~110 columns). Options alone are never enough: an agent's
+  own markdown checklist is not a question, and an answered question is rendered into the
+  transcript as a scalar summary, so the hint line does not linger. (English locale only.)
+- **grok** (`GrokDetector`) — rules taken from captures of the real CLI (they are the fixtures in
+  `features/testdata/grok-*.txt`): blocked is the two cards that hold a turn open — an approval
+  card, which counts its options (`1/4:select │ Tab:next option │ …`), and the question tool,
+  which draws no counter (its rows are `1 (◇) …`) and is matched by its footer
+  (`Tab:next answer │ Esc:scrollback`) and its status line (`Waiting on answers for …`). A live
+  status line carrying `[stop]` under a braille spinner is working; the resting hint line
+  (`Ctrl+x:shortcuts`) under the prompt box is idle. grok has a detector of its own because its
+  footer names the permission mode — `Grok 4.7 (high) · always-approve` — and the shared keyword
+  rules match `approve`.
+- **other agents** (`genericDetector`, one per name) — the shared rules: a braille frame is working,
+  a small set of unambiguous prompt strings (`[y/n]`, `yes/no`, …) is blocked, a prompt tail or a
+  shortcuts footer is idle. Word matching was tried and removed: it fired on ordinary text such as
+  token counters and paths.
+- **idle** everywhere — a shell prompt, or a pane whose foreground process is no longer the agent.
+
+On top of the screen state, the daemon records whether the pane's agent has **worked at all**: the
+first tick it sees a pane working it sets the pane option `@tmuxrd_finished`. `Detect` reads that
+back and promotes an idle pinned pane to the **Finished** state, which is the `✓`. The pin is a
+**notification**, so the daemon clears it as soon as the pane's window is the current window of a
+session that has an attached client (`tmux.Pane.Viewed`) — what you are looking at needs no pin,
+and a detached session's current window is not "viewed" by anyone, so its pins survive until you
+attach. `Working` and `Blocked` win over `Finished`: a live turn or a question is never masked by
+the pin.
 
 The timer is owned by the daemon and measures the **current** working period: it starts when the
 agent starts working, is frozen when it stops, and restarts from zero the next time the agent
-starts working. Unlike the `✓` marker it is not persisted, so a daemon restart resets the timer
-(but not the marker).
+starts working. Unlike the pin it is not persisted, so a daemon restart resets the timer (but not
+the checkmark).
 
 ## Development
 
 ```sh
 make build        # bin/tmuxrd + cmd/fakeagent/fakeagent
-make integration  # the godog suite (52 scenarios)
+make integration  # the godog suite (58 scenarios)
 make vet
 ```
 
@@ -221,8 +239,10 @@ make vet
 
 A scenario can pin a pane to a synthetic state (`working`, `blocked`, …) or replay a real pane
 capture: a `screen` column in an `agent windows` table makes the fake agent render that file
-verbatim (`fakeagent -screen-file`), which is how `features/testdata/pi-question-2026-10-15.txt`
-— a verbatim `tmux capture-pane -p` of a live pi question — is asserted against.
+verbatim (`fakeagent -screen-file`), so detection is asserted against the bytes a real TUI drew.
+`features/testdata/pi-question-2026-10-15.txt` is a live pi question and
+`features/testdata/grok-{idle,working,blocked}.txt` are captures of the real grok CLI; the grok
+ones are what `GrokDetector` was written from and what `features/agent_detection.feature` asserts.
 
 ## Architecture
 

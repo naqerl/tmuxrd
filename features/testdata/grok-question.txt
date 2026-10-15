@@ -1,0 +1,39 @@
+
+  ~                                                                                        19K / 256K │ [Dashboard]
+
+
+     ❯ Ask me a question using your tool                                                                  1:12 PM
+
+
+     ◆ Thought for 3.5s
+
+     I'll ask you one question through the question tool.                                                 1:12 PM
+
+     ◆ Ask What should we work on next?
+
+
+
+
+
+
+
+
+
+
+
+   ◆ Waiting on answers for What should we work on next?                                         7.3s ⇣19.7k [stop]
+
+  ┃
+  ┃  What should we work on next?
+  ┃
+  ┃
+  ┃  1 (○) A coding task (Recommended)     Pick a repo or bug and start implementing or fixing it.                █
+  ┃  2 (○) Explain something               Walk through a concept, a diff, or how a part of the setup works.      █
+  ┃  3 (○) Just testing the question tool  No follow-up work — this was only to see the question UI.              █
+  ┃  z (○) Type your answer here
+  ┃
+  ┃  ↑/↓ navigate · y copy                                                                         Enter:submit
+  ┃
+
+  Tab:next answer  │  Esc:scrollback  │  Shift+x:dismiss
+

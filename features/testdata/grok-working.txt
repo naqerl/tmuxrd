@@ -1,0 +1,40 @@
+
+  /tmp/grokkit                                                                                18K / 256K │ [Dashboard]
+
+
+     ❯ Run `sleep 8` then print the word DONE.                                                               1:01 PM
+
+
+     ◆ Running sleep eight seconds then print DONE
+
+
+
+
+
+
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+
+   ⠼ Sleep eight seconds then print DONE… 2.0s                                                   4.0s ⇣18.9k [↓][stop]
+
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · always-approve ─╯
+
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
+

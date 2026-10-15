@@ -287,10 +287,12 @@ func InitializeScenario(s *godog.ScenarioContext) {
 			if err != nil {
 				return err
 			}
-			if !strings.Contains(content, "pi") && !strings.Contains(content, "claude") && !strings.Contains(content, "codex") {
-				return fmt.Errorf("no agent rows yet:\n%s", content)
+			for _, agent := range []string{"pi", "claude", "codex", "grok", "kimi"} {
+				if strings.Contains(content, agent) {
+					return nil
+				}
 			}
-			return nil
+			return fmt.Errorf("no agent rows yet:\n%s", content)
 		})
 	})
 	s.Step(`^I refresh the sidebar$`, func(ctx context.Context) error {
@@ -467,7 +469,7 @@ func InitializeScenario(s *godog.ScenarioContext) {
 	})
 	s.Step(`^summary agents should be (\d+)$`, func(ctx context.Context, want int) error {
 		return eventually(3*time.Second, func() error {
-			agents, _, _, _, err := cur.env.Summary()
+			agents, _, _, _, _, err := cur.env.Summary()
 			if err != nil {
 				return err
 			}

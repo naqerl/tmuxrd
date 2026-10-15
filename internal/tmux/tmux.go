@@ -143,12 +143,12 @@ type Pane struct {
 	Sidebar bool
 	Layout  string
 
-	// Finished is the pane's @tmuxrd_finished marker: the daemon sets it the
+	// Pinned is the pane's @tmuxrd_finished marker: the daemon sets it the
 	// first time it sees the pane's agent working, so the sidebar can tell an
 	// agent that has finished a run (✓) from one that never started (○). tmux
 	// keeps pane options for the life of the pane, so the marker survives a
 	// daemon restart and dies with the pane — a replacement agent starts fresh.
-	Finished bool
+	Pinned bool
 
 	// Viewed is true when this pane is in the window a client is looking at:
 	// the window is its session's current window AND that session has at least
@@ -186,7 +186,7 @@ func (s Server) ListPanes() ([]Pane, error) {
 			WindowZoomed: fields[11] == "1",
 			Sidebar:      strings.TrimSpace(fields[12]) == "1",
 			Layout:       strings.TrimSpace(fields[13]),
-			Finished:     strings.TrimSpace(fields[14]) == "1",
+			Pinned:       strings.TrimSpace(fields[14]) == "1",
 			Viewed:       strings.TrimSpace(fields[15]) == "1" && atoi(fields[16]) > 0,
 		})
 	}

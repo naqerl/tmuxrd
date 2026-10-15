@@ -113,9 +113,89 @@ func notAQuestion() string {
 	}, "\n")
 }
 
+// grok screens. The markers here are the ones internal/detect.GrokDetector keys
+// on, taken from captures of the real CLI (features/testdata/grok-*.txt): the
+// option counter under an approval card, the "[stop]" affordance on a live
+// status line, and the resting "Ctrl+x:shortcuts" hint under the prompt box.
+// The fixture replays are the verbatim evidence; these make the fake grok
+// honest too, so a scenario can switch its state through the state file.
+
+func grokHint(extra ...string) string {
+	parts := append([]string{"Shift+Tab:mode"}, extra...)
+	parts = append(parts, "Ctrl+x:shortcuts")
+	return strings.Join(parts, "  │  ")
+}
+
+// grokIdle is grok at its prompt. The model/permission-mode footer is the part
+// the shared keyword rules would trip over ("always-approve").
+func grokIdle() string {
+	return strings.Join([]string{
+		"     ❯                                                                      12:57 PM",
+		"",
+		"  ╭───────────────────────────── Grok 4.7 (high) · always-approve ─╮",
+		"  │ ❯                                                             │",
+		"  ╰───────────────────────────────────────────────────────────────╯",
+		"  " + grokHint(),
+	}, "\n")
+}
+
+// grokWorking is grok mid-turn: a braille spinner, the activity ending in "…",
+// the elapsed time and the [stop] affordance.
+func grokWorking(frame string) string {
+	return strings.Join([]string{
+		"     ❯ Run `sleep 4` then print DONE.                                  12:57 PM",
+		"",
+		"  " + frame + " Waiting for response… 1.2s                        1.2s ⇣1.32k [stop]",
+		"",
+		"  ╭───────────────────────────── Grok 4.7 (high) · always-approve ─╮",
+		"  │ ❯                                                             │",
+		"  ╰───────────────────────────────────────────────────────────────╯",
+		"  " + grokHint("Ctrl+c:cancel"),
+	}, "\n")
+}
+
+// grokApproval is grok's approval card.
+func grokApproval() string {
+	return strings.Join([]string{
+		"   ◆ Running Write `/tmp/project/hello.txt` 7.4s                         8.8s ⇣18.8k [stop]",
+		"  ┃",
+		"  ┃  ›  Allow Edit to /tmp/project/hello.txt?",
+		"  ┃",
+		"  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)",
+		"  ┃  2 (○) Yes, allow all edits during this session",
+		"  ┃  3 (○) Yes",
+		"  ┃  4 (○) No, reject (type to add feedback)",
+		"  ┃",
+		"  1/4:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback",
+	}, "\n")
+}
+
+// agentScreen picks the persona-specific screen for a state, so the fake is not
+// pretending every agent draws pi's question. It returns "" when the generic
+// rendering applies.
+func agentScreen(agent, state, spinFrame string) string {
+	if agent != "grok" {
+		return ""
+	}
+	switch state {
+	case stateBlocked:
+		return grokApproval()
+	case stateWorking:
+		return grokWorking(spinFrame)
+	case stateIdle, "":
+		return grokIdle()
+	}
+	return ""
+}
+
 // The TUI renders richer frames; these banners are the headless fallback
 // (no TTY) and the contract for what internal/detect.classifyTail expects.
-func banner(state string) string {
+func banner(agent, state string) string {
+	// The persona's own screen wins when it has one (grok draws its own status
+	// line, approval card and prompt, and its footer is not pi's question).
+	if s := agentScreen(agent, state, "⠋"); s != "" {
+		return s + "\n"
+	}
 	switch state {
 	case stateWorking:
 		// The braille spinner is what detection keys on, so the headless banner
@@ -275,10 +355,14 @@ func (m model) renderExchange(st string) string {
 
 // View renders the state frame. Every state keeps detect-visible markers:
 // idle ends on a ">" prompt, working carries "Thinking..."/"working", blocked
-// carries "[y/n]", unknown has no markers at all.
+// carries "[y/n]", unknown has no markers at all. A persona with screen rules
+// of its own (grok) draws its own frames instead — see agentScreen.
 func (m model) View() string {
 	if m.screen != "" {
 		return m.screen
+	}
+	if s := agentScreen(m.agent, m.state, spinnerFrames[m.spin]); s != "" {
+		return s
 	}
 	switch m.state {
 	case stateWorking:
@@ -474,7 +558,7 @@ func main() {
 			time.Sleep(fakeSleep)
 			return
 		}
-		fmt.Print(banner(state))
+		fmt.Print(banner(who, state))
 		for range time.Tick(statePollInterval) {
 			if path == "" {
 				time.Sleep(fakeSleep)
@@ -486,7 +570,7 @@ func main() {
 			}
 			if s := normalizeState(string(b)); s != "" && s != state {
 				state = s
-				fmt.Print(banner(state))
+				fmt.Print(banner(who, state))
 			}
 		}
 	}

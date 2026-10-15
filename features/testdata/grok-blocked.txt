@@ -1,0 +1,40 @@
+
+  /tmp/grokkit                                                                                18K / 256K │ [Dashboard]
+
+
+     ❯ Create a file named hello.txt in /tmp/grokkit containing the single word hi.                         12:59 PM
+
+
+     ◆ Creating hello.txt
+
+       1  hi
+
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+
+   ◆ Running Write `/tmp/grokkit/hello.txt` 1m53s                                                  1m55s ⇣18.8k [stop]
+
+  ┃
+  ┃  ›  Allow Edit to /tmp/grokkit/hello.txt?
+  ┃
+  ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)
+  ┃  2 (○) Yes, allow all edits during this session
+  ┃  3 (○) Yes
+  ┃  4 (○) No, reject (type to add feedback)
+  ┃
+
+  1/4:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback
+
