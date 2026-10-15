@@ -1,6 +1,6 @@
 @sidebar @switch @performance
 Feature: Sidebar reflects window focus quickly and stays consistent
-  Switching windows must move the sidebar's ">" selection marker promptly,
+  Switching windows must move the sidebar's accent highlight promptly,
   and the sidebar must never become inconsistent (double / missing panes).
 
   Background:

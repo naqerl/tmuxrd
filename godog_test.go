@@ -129,11 +129,16 @@ func InitializeScenario(s *godog.ScenarioContext) {
 		if len(rows) == 0 {
 			return nil
 		}
-		if err := cur.env.NewSession(sess, cell(tbl, rows[0], "agent"), cell(tbl, rows[0], "state")); err != nil {
+		// An optional "screen" column makes the fake agent render that file
+		// verbatim instead of a synthetic state banner — the way a real pane
+		// capture is replayed (see features/testdata).
+		if err := cur.env.NewSessionWithScreen(sess,
+			cell(tbl, rows[0], "agent"), cell(tbl, rows[0], "state"), cell(tbl, rows[0], "screen")); err != nil {
 			return err
 		}
 		for _, row := range rows[1:] {
-			if err := cur.env.NewWindow(sess, cell(tbl, row, "agent"), cell(tbl, row, "state")); err != nil {
+			if err := cur.env.NewWindowWithScreen(sess,
+				cell(tbl, row, "agent"), cell(tbl, row, "state"), cell(tbl, row, "screen")); err != nil {
 				return err
 			}
 		}
@@ -183,6 +188,13 @@ func InitializeScenario(s *godog.ScenarioContext) {
 	// (tmuxenv.SetAgentState) — the pane keeps running, only the banner changes.
 	s.Step(`^agent "([^"]*)" in session "([^"]*)" window "([^"]*)" is in state "([^"]*)"$`, func(ctx context.Context, agent, sess, win, state string) error {
 		return cur.env.SetAgentState(sess, win, state)
+	})
+
+	// Attach a control-mode client: it makes the session's current window count
+	// as "viewed" (the daemon consumes the finished marker there) without a TTY
+	// and without touching the window size.
+	s.Step(`^a client is attached to session "([^"]*)"$`, func(ctx context.Context, sess string) error {
+		return cur.env.AttachClient(sess)
 	})
 
 	s.Step(`^the tmuxrd config is loaded$`, func(ctx context.Context) error {

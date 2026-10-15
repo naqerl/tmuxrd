@@ -10,15 +10,26 @@ narrow sidebar that shows it:
 tmuxrd
 ────────────────────────────────
 main
-> ⠴ 0:pi           1m26s  user/
-  ○ 2:pi                  user/
+  ⠴ 0:pi           1m26s  user/   ← highlighted: the window you are looking at
+  ✓ 2:pi                  user/
   ? 3:claude             api/
+  ○ 4:grok                 web/
 ```
 
 - `⠴` (an animated braille spinner) — the agent is **working**, with a timer for the current run
+- `✓` — the agent **finished a run** and you have not looked at it since (a notification pin),
+  with the run's duration
 - `?` — the agent is **waiting on you** (a question/approval prompt)
-- `○` — idle, or the state could not be determined
-- the marker `>` tracks the window you are looking at; a window with no agent shows no marker
+- `○` — the agent has **never started** (a new session), has already been looked at, or its state
+  could not be determined
+- the **accent background** marks the row of the window you are looking at; when that window has
+  no agent, no row is highlighted
+
+`✓` is a per-pane tmux option (`@tmuxrd_finished`) the daemon sets the first time it sees the
+agent work, so it survives a daemon restart and dies with the pane. It is consumed the moment the
+agent's window becomes the one a client is viewing, so the checkmark is a notification: an agent
+that finishes in the window you are watching never pins, and one that pins stops pinning when you
+switch to it.
 
 Nothing is installed into the agents. State is inferred from what tmux already exposes (process
 name plus the visible screen), so it works with any agent in any pane.
@@ -131,7 +142,8 @@ fits (`window-size latest`, tmux's default):
 Both form factors share the same palette: the sidebar has a background of its own so it stands out
 from the agent pane, each agent row/tab sits on a secondary background, the row/tab you are looking
 at is highlighted on an accent background, and the rest of the pane is filled with the sidebar
-background. (The desktop rows keep a `>` as well; the mobile strip uses the accent alone.)
+background. The accent background is the selection marker in both shapes — there is no `>`
+pointer, so a desktop row starts one column further left and uses the width for its content.
 
 The shape is re-checked every time the window resizes and by the daemon (every tick), so attaching
 from a phone flips the sidebar to the strip and attaching from a desktop flips it back. A window
@@ -168,26 +180,49 @@ put a one-line census (`agents=3 idle=1 working=1 blocked=1`) there yourself.
 
 - **working** — the agent's braille spinner animation is on screen (any Unicode braille frame).
   Word matching was tried and removed: it fired on ordinary text such as token counters and paths.
-- **blocked (pi)** — pi's multiple-choice prompt, matched structurally: pi's exact footer help
-  *and* at least two numbered `[ ]` options. Options alone are not enough, so an agent's own
-  markdown checklist does not count.
+- **blocked (pi)** — pi's `ask-user-question` dialog, matched structurally: the invariant opening
+  of the dialog's hint line, `Enter to select · ↑/↓ to navigate`. Every variant of that dialog
+  leads with those two parts — a multi-select question adds `Space to toggle`, a multi-question
+  one adds `Tab to switch questions`, and `n to add notes` drops while a text input has the
+  keyboard; the Submit tab lists no options at all but is still waiting on you — so the prefix
+  covers them all. It also works in a narrow pane, because the TUI clips the hint line from the
+  right and keeps its prefix (the earlier exact-footer match needed ~110 columns). Options alone
+  are never enough: an agent's own markdown checklist is not a question, and an answered question
+  is rendered into the transcript as a scalar summary, so the hint line does not linger.
+  (The English locale only.)
 - **blocked (other agents)** — a small set of unambiguous prompt strings (`[y/n]`, `yes/no`, …).
 - **idle** — a shell prompt, or a pane whose foreground process is no longer the agent.
 
+On top of the state, the daemon records whether the pane's agent has **worked at all**: the first
+tick it sees a pane working it sets the pane option `@tmuxrd_finished`, and `Detect` reads that
+back. The sidebar draws `✓` for a pane that has worked and is no longer working, and reserves `○`
+for a pane that never started. The marker is a **notification**, so the daemon clears it as soon
+as the pane's window is the current window of a session that has an attached client
+(`tmux.Pane.Viewed`) — what you are looking at needs no pin, and a detached session's current
+window is not "viewed" by anyone, so its pins survive until you attach. The marker is
+deliberately not part of the state machine — an answered question, an idle agent and a finished
+one are all `idle`; only the glyph differs.
+
 The timer is owned by the daemon and measures the **current** working period: it starts when the
 agent starts working, is frozen when it stops, and restarts from zero the next time the agent
-starts working.
+starts working. Unlike the `✓` marker it is not persisted, so a daemon restart resets the timer
+(but not the marker).
 
 ## Development
 
 ```sh
 make build        # bin/tmuxrd + cmd/fakeagent/fakeagent
-make integration  # the godog suite (46 scenarios)
+make integration  # the godog suite (52 scenarios)
 make vet
 ```
 
 `make integration` is hermetic: every scenario runs on its own `tmux -L godog-*` server with
 `-f /dev/null`, so it never touches a real tmux server. It needs `tmux` and `go` on `PATH`.
+
+A scenario can pin a pane to a synthetic state (`working`, `blocked`, …) or replay a real pane
+capture: a `screen` column in an `agent windows` table makes the fake agent render that file
+verbatim (`fakeagent -screen-file`), which is how `features/testdata/pi-question-2026-10-15.txt`
+— a verbatim `tmux capture-pane -p` of a live pi question — is asserted against.
 
 ## Commands
 
@@ -202,8 +237,13 @@ make vet
 
 ## Known limits
 
-- pi's blocked detection keys on its footer help, which needs a pane roughly 110 columns wide. In a
-  much narrower pane the agent's TUI truncates that footer, and then the state cannot be detected.
+- pi's blocked detection matches the dialog's English hint line; a non-English locale would not be
+  recognised. While the dialog is collapsed (`Ctrl+]`) it renders a single `… to expand · Esc to
+  cancel` row, which is not specific enough to anchor on and is reported unknown.
 - Working detection is braille-spinner only. An agent that shows no braille spinner while working
   will not be reported as working.
+- The `✓` marker is one per **pane**, not per agent process: quitting pi and starting a new one in
+  the same pane keeps the `✓` until it works again or you view the pane.
+- "Viewed" is per session: a window counts as seen when it is its session's current window *and*
+  that session has an attached client. Agents running in detached sessions keep their `✓`.
 - The timer's values are in the daemon's memory, so restarting the daemon resets them.

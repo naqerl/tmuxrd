@@ -15,6 +15,11 @@
 //	-state-file <path>  file polled every ~250ms; a changed content switches
 //	                    the state of the *running* process (also read from
 //	                    FAKEAGENT_STATE_FILE)
+//	-screen-file <path> render the file verbatim instead of a synthetic banner.
+//	                    Replays a real agent pane capture (tmux capture-pane) so
+//	                    detection is exercised against exactly what a live TUI
+//	                    put on screen; the rendered screen is pinned (state
+//	                    changes no longer affect the view).
 //
 // Precedence: a non-empty state file wins (it is the live control channel
 // tmuxenv.SetAgentState writes), otherwise -state, otherwise the positional
@@ -75,9 +80,11 @@ const (
 	stateUnknown = "unknown"
 )
 
-// piQuestionFooter is pi's real multi-select footer, captured verbatim. The
-// fake renders it together with numbered "[ ]" options so the detection path is
-// exercised end to end; keep it byte-identical to pi's output.
+// piQuestionFooter is pi's multi-select footer, captured verbatim. The fake
+// renders it together with numbered "[ ]" options so the detection path is
+// exercised end to end; keep it byte-identical to pi's output. A single-select
+// question has no "[ ]" rows and a different footer — that variant is covered
+// by replaying a real capture with -screen-file (see features/testdata).
 const piQuestionFooter = "Enter to select · ↑/↓ to navigate · Space to toggle · n to add notes · Esc to cancel · Ctrl+] to collapse"
 
 // piQuestion renders pi's multiple-choice prompt: two or more numbered "[ ]"
@@ -201,6 +208,10 @@ type model struct {
 	stateAt time.Time
 	width   int
 	height  int
+	// screen, when non-empty, is a verbatim pane capture that replaces the
+	// synthetic view (-screen-file). The detection contract is then exactly
+	// whatever a real TUI rendered.
+	screen string
 }
 
 func newModel(agent string) model {
@@ -266,6 +277,9 @@ func (m model) renderExchange(st string) string {
 // idle ends on a ">" prompt, working carries "Thinking..."/"working", blocked
 // carries "[y/n]", unknown has no markers at all.
 func (m model) View() string {
+	if m.screen != "" {
+		return m.screen
+	}
 	switch m.state {
 	case stateWorking:
 		elapsed := time.Since(m.stateAt).Round(time.Second)
@@ -373,6 +387,7 @@ func parseControl(line string) (cmd, text string, err error) {
 func main() {
 	stateFlag := flag.String("state", "", "state to render: idle | working | blocked | unknown")
 	stateFile := flag.String("state-file", "", "file polled for state changes (also FAKEAGENT_STATE_FILE)")
+	screenFile := flag.String("screen-file", "", "render this captured screen verbatim instead of a state banner")
 	sock := flag.String("socket", "", "control socket path (also FAKEAGENT_SOCKET)")
 	agent := flag.String("agent", "", "persona name (defaults to argv[0] basename)")
 	flag.Parse()
@@ -410,6 +425,16 @@ func main() {
 
 	m := newModel(who)
 	m.state = state
+	if *screenFile != "" {
+		b, err := os.ReadFile(*screenFile)
+		if err != nil {
+			// Render the failure in the pane: a silently state-rendering fake
+			// would make a broken fixture look like a detection failure.
+			m.screen = "fakeagent: cannot read screen file: " + err.Error() + "\n"
+		} else {
+			m.screen = string(b)
+		}
+	}
 	prog := tea.NewProgram(m, tea.WithAltScreen())
 	if spath != "" {
 		go func() {
@@ -443,6 +468,12 @@ func main() {
 	// plain banners forever so detection still works and the process name
 	// never changes.
 	if _, err := prog.Run(); err != nil {
+		if m.screen != "" {
+			// A pinned capture has no states to switch between.
+			fmt.Print(m.screen)
+			time.Sleep(fakeSleep)
+			return
+		}
 		fmt.Print(banner(state))
 		for range time.Tick(statePollInterval) {
 			if path == "" {

@@ -2,7 +2,6 @@ package detect
 
 import (
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +30,17 @@ type Result struct {
 	// time the agent starts working, and frozen when it stops. The daemon owns
 	// it; Detect leaves it zero.
 	Worked time.Duration
+	// Finished is true when the pane's agent has already done a working run:
+	// the daemon records it as the pane's @tmuxrd_finished option the first
+	// time it sees the agent work, so Detect reads it back from tmux and the
+	// sidebar can show ✓ for a finished agent and ○ only for one that never
+	// started. The daemon clears it again once the pane is viewed, so it is a
+	// notification pin, not a permanent badge. It stays true while the agent
+	// works again (the spinner wins the glyph); it dies with the pane.
+	Finished bool
+	// Viewed mirrors tmux.Pane.Viewed: the pane is in the window a client is
+	// looking at. The daemon consults it to consume the Finished marker.
+	Viewed bool
 }
 
 var agents = []string{"pi", "claude", "codex", "opencode", "cursor", "kimi", "hermes", "gemini", "grok"}
@@ -44,41 +54,50 @@ func isAgentCmd(cmd string) string {
 	return ""
 }
 
-// piQuestionFooter is the exact last line of pi's multiple-choice prompt,
-// captured verbatim from a real pi question. Together with the numbered "[ ]"
-// options above it, it is the only state in which pi is waiting on the user.
-const piQuestionFooter = "Enter to select · ↑/↓ to navigate · Space to toggle · n to add notes · Esc to cancel · Ctrl+] to collapse"
-
-// piOptionRe matches one numbered checkbox option, e.g. "❯ 1. [ ] Tier 1" or
-// "  2. [x] Tier 2". \s matches newlines too, so an option that wraps between
-// the number and the box still counts.
-var piOptionRe = regexp.MustCompile(`\d+\.\s*\[[ xX]\]`)
-
-// piAwaitingAnswer reports whether the screen is pi's multi-select question.
+// piDialogHint is the invariant opening of the hint line pi's ask-user-question
+// dialog renders at the bottom of every question tab. The rest of the line
+// changes with the question's shape — "Space to toggle" appears only when the
+// question is multi-select, "Tab to switch questions" only when the
+// questionnaire holds more than one question, "n to add notes" drops while the
+// notes editor or the "Type something." row holds the keyboard, and the Submit
+// tab says "n to add a note" — but these two parts lead every variant.
 //
-// It requires BOTH pi's exact footer help AND at least two numbered "[ ]"
-// options. Requiring both is what makes it precise: an agent's own markdown
-// checklist has the options but never the footer, and the footer alone is
-// specific to this prompt. Loose keyword matching ("option", "select", "1.",
-// "working") matched ordinary text on screen and produced false positives.
+// The strings are the extension's `en` locale (the default); a non-English
+// locale is not matched.
+const piDialogHint = "Enter to select · ↑/↓ to navigate"
+
+// piDialogHintKey is piDialogHint with every whitespace character removed, so a
+// pane that wraps the hint mid-word still matches.
+var piDialogHintKey = squeeze(piDialogHint)
+
+// piAwaitingAnswer reports whether the screen is pi's ask-user-question dialog,
+// the one state in which pi is waiting on the user.
 //
-// Whitespace is ignored when matching the footer so a terminal that wraps it
-// mid-word still matches. Note the limit this cannot cover: if the pane is too
-// narrow for the footer the TUI *truncates* it, and then it is genuinely not on
-// screen (pi's own footer needs ~110 columns).
+// It keys on the hint line's invariant prefix alone:
+//
+//   - A single-select question (the default) draws plain "N. label" rows with
+//     no "[ ]" checkbox. The earlier matcher required the exact multi-select
+//     footer *and* two numbered "[ ]" rows, so a live single-select question
+//     was reported as unknown (features/testdata/pi-question-2026-10-15.txt is
+//     such a capture).
+//   - The Submit tab lists no numbered rows at all, yet the user is still the
+//     one who must press Enter, so requiring options would miss it too.
+//   - The dialog renders the hint through OneLineClippedText, which clips from
+//     the right and keeps the prefix, so this also works in a narrow pane where
+//     the old exact-footer match needed ~110 columns.
+//
+// The prefix is unique to the dialog: an answered question is rendered into the
+// transcript as a scalar summary, not as the prompt, so the hint does not
+// linger on screen after the user answers. The one state this misses is a
+// collapsed dialog (Ctrl+]), whose single row reads "<key> to expand · Esc to
+// cancel" — "Esc to cancel" alone is too generic to anchor on.
 func piAwaitingAnswer(screen string) bool {
-	if !strings.Contains(squeeze(screen), piQuestionFooterKey) {
-		return false
-	}
-	return len(piOptionRe.FindAllString(screen, -1)) >= 2
+	return strings.Contains(squeeze(screen), piDialogHintKey)
 }
 
 // squeeze removes every whitespace character, so text that the terminal wrapped
 // mid-word still matches and spacing differences are irrelevant.
 func squeeze(s string) string { return strings.Join(strings.Fields(s), "") }
-
-// piQuestionFooterKey is the footer with all whitespace removed.
-var piQuestionFooterKey = squeeze(piQuestionFooter)
 
 func classifyScreen(screen, agent string) State {
 	lines := strings.Split(screen, "\n")
@@ -243,7 +262,7 @@ func Detect(s tmux.Server) []Result {
 		if fc == "" || isShell(fc) {
 			st = Idle
 		}
-		out = append(out, Result{PaneID: p.ID, Agent: agent, State: st, Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName})
+		out = append(out, Result{PaneID: p.ID, Agent: agent, State: st, Path: p.Path, Session: p.Session, Window: p.Window, WindowName: p.WindowName, Finished: p.Finished, Viewed: p.Viewed})
 	}
 	return out
 }

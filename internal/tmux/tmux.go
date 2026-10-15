@@ -142,9 +142,24 @@ type Pane struct {
 	// the option was never set).
 	Sidebar bool
 	Layout  string
+
+	// Finished is the pane's @tmuxrd_finished marker: the daemon sets it the
+	// first time it sees the pane's agent working, so the sidebar can tell an
+	// agent that has finished a run (✓) from one that never started (○). tmux
+	// keeps pane options for the life of the pane, so the marker survives a
+	// daemon restart and dies with the pane — a replacement agent starts fresh.
+	Finished bool
+
+	// Viewed is true when this pane is in the window a client is looking at:
+	// the window is its session's current window AND that session has at least
+	// one attached client. A detached session's current window is not viewed by
+	// anyone, so this cannot accidentally consume a marker. The daemon clears
+	// Finished on a viewed pane, which is what makes ✓ a notification pin
+	// rather than a permanent badge.
+	Viewed bool
 }
 
-const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}"
+const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}\t#{@tmuxrd_finished}\t#{window_active}\t#{session_attached}"
 
 // ListPanes enumerates every pane on every window of every session.
 func (s Server) ListPanes() ([]Pane, error) {
@@ -158,7 +173,7 @@ func (s Server) ListPanes() ([]Pane, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 14 {
+		if len(fields) < 17 {
 			continue
 		}
 		panes = append(panes, Pane{
@@ -171,6 +186,8 @@ func (s Server) ListPanes() ([]Pane, error) {
 			WindowZoomed: fields[11] == "1",
 			Sidebar:      strings.TrimSpace(fields[12]) == "1",
 			Layout:       strings.TrimSpace(fields[13]),
+			Finished:     strings.TrimSpace(fields[14]) == "1",
+			Viewed:       strings.TrimSpace(fields[15]) == "1" && atoi(fields[16]) > 0,
 		})
 	}
 	return panes, nil
@@ -285,6 +302,12 @@ func (s Server) ResizePane(paneID, axis string, n int) {
 // SetPaneOption sets an option on one pane (the sidebar tag).
 func (s Server) SetPaneOption(paneID, name, value string) {
 	s.Run("set-option", "-p", "-t", paneID, name, value)
+}
+
+// UnsetPaneOption removes a pane option, so it stops existing rather than
+// lingering with an empty value.
+func (s Server) UnsetPaneOption(paneID, name string) {
+	s.Run("set-option", "-pu", "-t", paneID, name)
 }
 
 // SetWindowOption sets an option on one window (the recorded sidebar shape).

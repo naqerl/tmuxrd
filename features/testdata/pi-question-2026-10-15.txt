@@ -1,0 +1,39 @@
+ lib/tour/tour.go (timeout 30s)
+
+ ... (78 earlier lines, ctrl+o to expand)
+    }
+    if dec.More() {
+       return Tour{}, errors.New("tour: trailing data after the script")
+    }
+    return t, nil
+
+ Took 0.0s
+
+
+ Memory search unavailable (qmd missing). Fine.
+
+ Let me ask the clarifying questions now — semantics and scope are genuinely ambiguous.
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ←  □ Semantics   □ Scope   ✓ Submit  →
+
+
+ What should a bare commit (e.g. `citydiff -range abc123`, or `"range": "HEAD"` in a tour) mean?
+
+❯ 1. That commit's own change (Recommended)
+     abc123 => abc123^..abc123; HEAD => HEAD^..HEAD. The diff is exactly what that one commit did. A root commit
+     diffs against the empty tree.
+  2. That commit up to HEAD
+     abc123 => abc123..HEAD; HEAD => HEAD..HEAD (empty, so falls back to HEAD^..HEAD? or errors). The diff is
+     everything since that commit.
+  3. Treat 'HEAD' specially only
+     Only HEAD means HEAD^..HEAD; any other bare hash is still an error requiring A..B.
+  4. Type something.
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+ Enter to select · ↑/↓ to navigate · n to add notes · Tab to switch questions · Esc to cancel · Ctrl+] to collapse
+
+
+
+

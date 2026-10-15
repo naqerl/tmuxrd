@@ -6,6 +6,7 @@ package tmuxenv
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,10 @@ type Env struct {
 	daemons      []int  // every daemon pid we started, so Close can reap them all
 	fakeName     string
 	envPublished bool
+	// attachClients are control-mode tmux clients started by AttachClient, with
+	// the stdin pipe that keeps each one alive. Close reaps both.
+	attachClients []*exec.Cmd
+	attachStdin   []*os.File
 }
 
 // fakeagent states accepted by NewSession/NewWindow. An empty state means
@@ -92,6 +97,14 @@ func New(socket string, repoRoot string) (*Env, error) {
 
 // Close tears the server down and stops any daemon this Env started.
 func (e *Env) Close() {
+	for _, cmd := range e.attachClients {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}
+	for _, f := range e.attachStdin {
+		f.Close()
+	}
 	e.StopDaemon()
 	e.Server.KillServer()
 	for i := 0; i < 100 && e.Server.HasServer(); i++ {
@@ -142,18 +155,29 @@ func (e *Env) run(args ...string) (string, error) {
 // detection must ignore it. Every fake agent also gets its own state file
 // (<BinDir>/<agent>.state, pre-seeded with state) and is launched with
 // -state-file so SetAgentState can flip a running pane's state in place.
-func (e *Env) cmd(agent, state string) (string, error) {
+//
+// screen is a repo-relative (or absolute) file the fake renders verbatim
+// instead of a state banner — used to replay a real agent pane capture. A
+// screen-mode pane gets no state file: its view is pinned.
+func (e *Env) cmd(agent, state, screen string) (string, error) {
 	if state == "" {
 		state = StateIdle
 	}
 	if agent == "plain" {
 		return "/bin/sleep 3600", nil
 	}
+	bin := filepath.Join(e.BinDir, agent)
+	if screen != "" {
+		if !filepath.IsAbs(screen) {
+			screen = filepath.Join(e.Root, screen)
+		}
+		return fmt.Sprintf("%s -screen-file %s", bin, screen), nil
+	}
 	path := e.StateFile(agent)
 	if err := os.WriteFile(path, []byte(state), 0o644); err != nil {
 		return "", fmt.Errorf("write state file %s: %w", path, err)
 	}
-	return fmt.Sprintf("%s -state-file %s", filepath.Join(e.BinDir, agent), path), nil
+	return fmt.Sprintf("%s -state-file %s", bin, path), nil
 }
 
 // StateFile is the one-per-agent state file SetAgentState rewrites and the
@@ -207,10 +231,63 @@ func (e *Env) SetAgentState(sess, win, state string) error {
 	return nil
 }
 
+// AttachClient attaches a control-mode tmux client to the session. The daemon
+// treats a pane as viewed only when its window is the current window of a
+// session that has at least one attached client (tmux.Pane.Viewed); a
+// control-mode client is the one kind of client that needs no TTY, so this is
+// how a scenario makes a window count as seen.
+//
+// Control clients do not participate in window sizing (tmux keeps the window at
+// its real client's size, verified with -x 200 -y 50), so layout scenarios are
+// unaffected. The client stays attached until Close, which kills it.
+func (e *Env) AttachClient(sess string) error {
+	cmd := exec.Command("tmux", "-L", e.Socket, "-C", "attach", "-t", sess)
+	cmd.Env = append(os.Environ(), "PATH="+e.PATH())
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	// A pipe on stdin is what keeps a control client alive: EOF ends it. The
+	// child gets its own copy of the read end; the write end stays open here.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stdin = pr
+	if err := cmd.Start(); err != nil {
+		pr.Close()
+		pw.Close()
+		return fmt.Errorf("attach client to %s: %w", sess, err)
+	}
+	pr.Close()
+	e.attachClients = append(e.attachClients, cmd)
+	e.attachStdin = append(e.attachStdin, pw)
+
+	// Wait until tmux counts it, so the next step can rely on "viewed".
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, err := e.run("display-message", "-p", "-t", sess, "#{session_attached}")
+		if err == nil {
+			if n, _ := strconv.Atoi(strings.TrimSpace(out)); n > 0 {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("session %s never reported an attached client (last: %q)", sess, out)
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+}
+
 // NewSession creates a detached session running a fake agent in the given
 // state ("" = idle banner).
 func (e *Env) NewSession(name, agent, state string) error {
-	cmd, err := e.cmd(agent, state)
+	return e.NewSessionWithScreen(name, agent, state, "")
+}
+
+// NewSessionWithScreen is NewSession with a verbatim screen file: the pane's
+// fake agent paints that capture instead of a synthetic state banner, so a
+// scenario can assert detection against exactly what a real TUI rendered.
+func (e *Env) NewSessionWithScreen(name, agent, state, screen string) error {
+	cmd, err := e.cmd(agent, state, screen)
 	if err != nil {
 		return err
 	}
@@ -236,7 +313,13 @@ func (e *Env) NewSession(name, agent, state string) error {
 // NOTE: -t sess: (with the trailing colon) — without it tmux resolves -t to a
 // window index and fails with "index 0 in use".
 func (e *Env) NewWindow(sess, agent, state string) error {
-	cmd, err := e.cmd(agent, state)
+	return e.NewWindowWithScreen(sess, agent, state, "")
+}
+
+// NewWindowWithScreen is NewWindow with a verbatim screen file (see
+// NewSessionWithScreen).
+func (e *Env) NewWindowWithScreen(sess, agent, state, screen string) error {
+	cmd, err := e.cmd(agent, state, screen)
 	if err != nil {
 		return err
 	}
@@ -712,16 +795,32 @@ func (e *Env) ClickPane(paneID string, x, y int) error {
 	return nil
 }
 
-// SidebarMarked returns the sidebar rows carrying the selection marker, so a
-// test can tell whether the marker survived (rather than vanished).
+// accentMarked reports whether a captured ANSI line carries the selection
+// accent. The desktop row and the mobile chip are both marked by the accent
+// background (ANSI colour 4), so this is how the selection is observed now that
+// the desktop has no `>` pointer.
+func accentMarked(line string) bool {
+	// tmux emits the accent background as its own SGR parameter (44), not a
+	// combined one, but accept a combined sequence too so the check does not
+	// depend on tmux's exact SGR grouping.
+	return strings.Contains(line, "[44m") || strings.Contains(line, ";44m")
+}
+
+// SidebarMarked returns the sidebar lines the client currently draws as the
+// selection, so a test can tell whether the selection survived (rather than
+// vanished).
 func (e *Env) SidebarMarked() ([]string, error) {
-	content, err := e.SidebarContent()
+	id, err := e.SidebarPane()
+	if err != nil {
+		return nil, err
+	}
+	out, err := e.Server.Run("capture-pane", "-p", "-e", "-t", id)
 	if err != nil {
 		return nil, err
 	}
 	var rows []string
-	for _, line := range strings.Split(content, "\n") {
-		if strings.Contains(line, ">") {
+	for _, line := range strings.Split(out, "\n") {
+		if accentMarked(line) {
 			rows = append(rows, line)
 		}
 	}
@@ -783,20 +882,25 @@ func (e *Env) SidebarContent() (string, error) {
 	return e.CapturePane(ids[0]), nil
 }
 
-// HasSelection reports whether the sidebar's first row shows the ">" marker
-// for the given window index (fast-switch assertion).
+// SidebarShowsSelection reports whether the sidebar currently draws the row for
+// the given window index as selected (fast-switch assertion). The selection is
+// the accent background, so this reads the ANSI form and identifies the row by
+// its "<index>:" text.
 func (e *Env) SidebarShowsSelection(window string) (bool, string, error) {
-	content, err := e.SidebarContent()
+	id, err := e.SidebarPane()
 	if err != nil {
 		return false, "", err
 	}
-	for _, l := range strings.Split(content, "\n") {
-		// A selected row is ">" and identifies its window as "<index>:".
-		if strings.Contains(l, ">") && strings.Contains(l, window+":") {
-			return true, content, nil
+	out, err := e.Server.Run("capture-pane", "-p", "-e", "-t", id)
+	if err != nil {
+		return false, "", err
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if accentMarked(l) && strings.Contains(l, window+":") {
+			return true, out, nil
 		}
 	}
-	return false, content, nil
+	return false, out, nil
 }
 
 // AllSidebarConsistent reports whether every window that should have a sidebar

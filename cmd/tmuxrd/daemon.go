@@ -53,6 +53,13 @@ func initSocketPath(srv tmux.Server) {
 	socketPath = filepath.Join(base, "tmuxrd-"+name+".sock")
 }
 
+// paneFinishedOption is the per-pane marker the daemon sets the first time it
+// sees the pane's agent working. It lives in tmux (pane options survive a
+// daemon restart and die with the pane), which is what lets the sidebar show ✓
+// for an agent that has finished a run and reserve ○ for one that never
+// started.
+const paneFinishedOption = "@tmuxrd_finished"
+
 func cmdDaemon() {
 	srv := tmux.NewServerFromEnv()
 	initSocketPath(srv)
@@ -104,7 +111,24 @@ func cmdDaemon() {
 				wt = &workTime{}
 				workTimes[r.PaneID] = wt
 			}
+			// The pin is consumed by looking: if the agent's window is the one a
+			// client is displaying, an unseen result no longer exists. Cleared
+			// before the working branch so an agent that works and stops in the
+			// window you are watching never flashes a ✓ for a tick.
+			if r.Viewed && r.Finished {
+				srv.UnsetPaneOption(r.PaneID, paneFinishedOption)
+				r.Finished = false
+			}
 			if r.State == detect.Working {
+				// The agent has done work: record it on the pane itself so the ✓
+				// survives a daemon restart (and an upgrade that restarts only
+				// the daemon). Detect reads it back from tmux on the next tick,
+				// so this write happens once per pane. A viewed pane is skipped:
+				// the user is seeing this run, so it is not a notification.
+				if !r.Finished && !r.Viewed {
+					srv.SetPaneOption(r.PaneID, paneFinishedOption, "1")
+					r.Finished = true
+				}
 				if wt.since.IsZero() {
 					// A new working period: start the timer over.
 					wt.since = now

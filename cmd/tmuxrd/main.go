@@ -268,35 +268,44 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dm%ds", m, rem)
 }
 
-// stateGlyph is the raw glyph for a state, with no colour of its own, so a tab
-// can colour it against the tab's background.
-func stateGlyph(s detect.State, spinView string) string {
-	switch s {
-	case detect.Working:
+// stateGlyph is the raw glyph for a result: the working spinner, "?" while the
+// agent waits on the user, "✓" once it has finished a run, and "○" only for an
+// agent that has never started (a new session) — see Result.Finished. Blocked
+// wins over finished: a question needs the eye more than a completed run does.
+// The glyph carries no colour of its own, so a tab can colour it against the
+// tab's background.
+func stateGlyph(r detect.Result, spinView string) string {
+	switch {
+	case r.State == detect.Working:
 		return strings.TrimRight(spinView, " ")
-	case detect.Blocked:
+	case r.State == detect.Blocked:
 		return "?"
+	case r.Finished:
+		return "✓"
 	default:
 		return "○"
 	}
 }
 
-// stateColor is the indicator colour for a row. The working spinner follows the
-// row's foreground; blocked and idle keep a bright signal colour, which reads on
-// both black and the blue selected row.
-func stateColor(s detect.State, selected bool) lipgloss.TerminalColor {
-	switch s {
-	case detect.Working:
-		if selected {
-			return rowSelFg
-		}
+// stateColor is the indicator colour for a row. On the focused row every state
+// uses the row's own foreground, so the whole row is one colour against the
+// accent background (an idle circle must not keep a signal colour inside a
+// selected row). Unselected rows keep the state signal: blocked bright red,
+// finished bright green, working the row foreground; an agent that has never
+// started is a quiet grey — a neutral state, not a success.
+func stateColor(r detect.Result, selected bool) lipgloss.TerminalColor {
+	if selected {
+		return rowSelFg
+	}
+	switch {
+	case r.State == detect.Working:
 		return rowFg
-	case detect.Blocked:
+	case r.State == detect.Blocked:
 		return lipgloss.ANSIColor(9) // bright red
-	case detect.Idle:
+	case r.Finished:
 		return lipgloss.ANSIColor(10) // bright green
 	default:
-		return lipgloss.ANSIColor(8) // quiet grey
+		return lipgloss.ANSIColor(8) // quiet grey: never started
 	}
 }
 
@@ -366,31 +375,30 @@ func (m model) sideView() string {
 				left += " " + t
 			}
 			selected := m.cursor >= 0 && gi == m.cursor
-			lead := " "
-			if selected {
-				lead = ">"
-			}
-			lines = append(lines, m.renderSideRow(r, selected, lead, left, sidePath(r.Path)))
+			lines = append(lines, m.renderSideRow(r, selected, left, sidePath(r.Path)))
 		}
 	}
 	return padSideBar(lines, width, m.height)
 }
 
 // renderSideRow draws one agent as a full-width row: the bar behind it, the
-// row's own background under the text, and the accent when selected. The glyph
-// keeps its state colour, so the row is assembled from separately rendered
-// segments — nesting a styled glyph inside a styled row would let the glyph's
-// reset cancel the row background.
-func (m model) renderSideRow(r detect.Result, selected bool, lead, left, path string) string {
+// row's own background under the text, and the accent when selected. There is
+// no pointer column: the accent background *is* the selection marker, so the
+// row starts one column further left than it used to (the old "> " lead cost a
+// column to say what the highlight already says). The glyph keeps its state
+// colour, so the row is assembled from separately rendered segments — nesting a
+// styled glyph inside a styled row would let the glyph's reset cancel the row
+// background.
+func (m model) renderSideRow(r detect.Result, selected bool, left, path string) string {
 	rowStyle := tabStyle
 	bg := lipgloss.TerminalColor(rowBg)
 	if selected {
 		rowStyle = tabSelStyle
 		bg = rowSelBg
 	}
-	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State, selected))
-	out := rowStyle.Render(lead+" ") +
-		glyph.Render(stateGlyph(r.State, m.spin.View())) +
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r, selected))
+	out := rowStyle.Render(" ") +
+		glyph.Render(stateGlyph(r, m.spin.View())) +
 		rowStyle.Render(left)
 	if m.width > 0 {
 		// Right-align the path, then fill the rest of the width with the row's
@@ -467,14 +475,14 @@ func (m model) renderTab(i int) string {
 		tab = tabSelStyle
 		bg = rowSelBg
 	}
-	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r.State, i == m.cursor))
-	return tab.Render(" ") + glyph.Render(stateGlyph(r.State, m.spin.View())) + tab.Render(" "+r.Agent+" ")
+	glyph := lipgloss.NewStyle().Background(bg).Foreground(stateColor(r, i == m.cursor))
+	return tab.Render(" ") + glyph.Render(stateGlyph(r, m.spin.View())) + tab.Render(" "+r.Agent+" ")
 }
 
 // tabWidth is the visible width renderTab occupies.
 func (m model) tabWidth(i int) int {
 	r := m.results[i]
-	return 3 + ansi.StringWidth(stateGlyph(r.State, m.spin.View())) + ansi.StringWidth(r.Agent)
+	return 3 + ansi.StringWidth(stateGlyph(r, m.spin.View())) + ansi.StringWidth(r.Agent)
 }
 
 // stripView renders the mobile strip: a full-width row of agent tabs, and a
@@ -587,8 +595,16 @@ func (m model) stripChipAt(x int) (int, bool) {
 func (m model) stripDetail() string {
 	if m.cursor < 0 || m.cursor >= len(m.results) {
 		counts := map[detect.State]int{}
+		done, fresh := 0, 0
 		for _, r := range m.results {
 			counts[r.State]++
+			switch {
+			case r.State == detect.Working || r.State == detect.Blocked:
+			case r.Finished:
+				done++
+			default:
+				fresh++
+			}
 		}
 		parts := []string{fmt.Sprintf("%d agents", len(m.results))}
 		if n := counts[detect.Working]; n > 0 {
@@ -597,8 +613,11 @@ func (m model) stripDetail() string {
 		if n := counts[detect.Blocked]; n > 0 {
 			parts = append(parts, fmt.Sprintf("?%d", n))
 		}
-		if n := counts[detect.Idle]; n > 0 {
-			parts = append(parts, fmt.Sprintf("○%d", n))
+		if done > 0 {
+			parts = append(parts, fmt.Sprintf("✓%d", done))
+		}
+		if fresh > 0 {
+			parts = append(parts, fmt.Sprintf("○%d", fresh))
 		}
 		return strings.Join(parts, "  ")
 	}
