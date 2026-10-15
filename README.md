@@ -196,7 +196,10 @@ so the display code switches over a closed set. The rules each detector applies:
   works in a narrow pane, because the TUI clips the hint line from the right and keeps its prefix
   (the earlier exact-footer match needed ~110 columns). Options alone are never enough: an agent's
   own markdown checklist is not a question, and an answered question is rendered into the
-  transcript as a scalar summary, so the hint line does not linger. (English locale only.)
+  transcript as a scalar summary, so the hint line does not linger. The words are not unique to the
+  dialog, though — a pane showing a write-up *about* this detector, `cat internal/detect/pi.go`, or
+  a diff of this file quotes them — so the match is confined to the pane's last rows and must begin
+  a row, followed by the next `·`-separated hint (English locale only.)
 - **grok** (`GrokDetector`) — rules taken from captures of the real CLI (they are the fixtures in
   `features/testdata/grok-*.txt`): blocked is the two cards that hold a turn open — an approval
   card, which counts its options (`1/4:select │ Tab:next option │ …`), and the question tool,

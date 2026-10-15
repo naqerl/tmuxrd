@@ -1,6 +1,9 @@
 package detect
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // PiDetector recognises pi and says what its pane is doing.
 //
@@ -23,7 +26,7 @@ func (PiDetector) Detect(v View) (State, bool) {
 	}
 	// Blocked before working, so a question is never masked by an incidental
 	// spinner.
-	if piAwaitingAnswer(v.Screen) {
+	if piAwaitingAnswer(tail) {
 		return Blocked, true
 	}
 	if hasBraille(tail) {
@@ -48,10 +51,12 @@ const piDialogHint = "Enter to select · ↑/↓ to navigate"
 // pane that wraps the hint mid-word still matches.
 var piDialogHintKey = squeeze(piDialogHint)
 
-// piAwaitingAnswer reports whether the screen is pi's ask-user-question dialog,
-// the one state in which pi is waiting on the user.
+// piAwaitingAnswer reports whether pi's ask-user-question dialog is open. tail
+// is the pane's last non-empty lines (Detect's own window): the dialog is drawn
+// at the bottom of the pane, so its hint row is in there.
 //
-// It keys on the hint line's invariant prefix alone:
+// The hint line's invariant prefix is all it keys on, because the rest of the
+// line changes with the question's shape:
 //
 //   - A single-select question (the default) draws plain "N. label" rows with
 //     no "[ ]" checkbox. The earlier matcher required the exact multi-select
@@ -64,11 +69,47 @@ var piDialogHintKey = squeeze(piDialogHint)
 //     the right and keeps the prefix, so this also works in a narrow pane where
 //     the old exact-footer match needed ~110 columns.
 //
-// The prefix is unique to the dialog: an answered question is rendered into the
-// transcript as a scalar summary, not as the prompt, so the hint does not
-// linger on screen after the user answers. The one state this misses is a
-// collapsed dialog (Ctrl+]), whose single row reads "<key> to expand · Esc to
-// cancel" — "Esc to cancel" alone is too generic to anchor on.
-func piAwaitingAnswer(screen string) bool {
-	return strings.Contains(squeeze(screen), piDialogHintKey)
+// The words themselves are not unique to the dialog: ordinary content can quote
+// them — the write-up of this detector, `cat internal/detect/pi.go`, a diff of
+// this file — and a pane showing any of those used to read as blocked while the
+// rule substring-searched the whole viewport. So the hint must also be shaped
+// like a row the dialog drew:
+//
+//   - it begins the row, once the padding and box chrome are trimmed, and
+//   - the prefix is followed by the next "·"-separated hint, or by the end of
+//     the row.
+//
+// Prose satisfies neither: "…invariant prefix (\"Enter to select · ↑/↓ to
+// navigate\") with all whitespace squeezed out…" sits mid-sentence, and a
+// wrapped quote that does begin a row is followed by the closing quote.
+//
+// Rows are glued together before the test, so a hint the pane wrapped mid-word
+// still matches: the prefix spans the row break and squeeze removes it.
+//
+// The one state this still misses is a collapsed dialog (Ctrl+]), whose single
+// row reads "<key> to expand · Esc to cancel" — "Esc to cancel" alone is too
+// generic to anchor on.
+func piAwaitingAnswer(tail []string) bool {
+	rows := make([]string, len(tail))
+	for i, line := range tail {
+		rows[i] = trimRowChrome(line)
+	}
+	for i := range rows {
+		joined := squeeze(strings.Join(rows[i:], "\n"))
+		if !strings.HasPrefix(joined, piDialogHintKey) {
+			continue
+		}
+		if rest := joined[len(piDialogHintKey):]; rest == "" || strings.HasPrefix(rest, "·") {
+			return true
+		}
+	}
+	return false
+}
+
+// trimRowChrome drops the padding a dialog row can carry — leading whitespace,
+// and the box drawing of a bordered dialog — so the hint still begins the row.
+func trimRowChrome(line string) string {
+	return strings.TrimLeftFunc(line, func(r rune) bool {
+		return unicode.IsSpace(r) || r == '|' || (r >= 0x2500 && r <= 0x259f)
+	})
 }

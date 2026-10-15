@@ -1,0 +1,39 @@
+
+ No > markers and no literals quoted — if you'd rather keep the exact on-screen strings in, say the word and I'll
+ put them back inline.
+
+
+ i mean just repeat it without queote formatting for the easy copy-paste
+
+
+ They want the previous "longer version" (the one in blockquote) reproduced as plain text, easy copy-paste. So just
+ output the longer version without ">" formatting. No commentary.
+
+ Which "longer version"? My second message's long version (the blockquote one). Deliver that as plain text lines.
+
+ They don't actually look the same — the difference is that "thinking" is an animation and "waiting" is chrome.
+
+ Working: the TUI is ticking a braille spinner (U+2801–28FF) in the viewport, and the current frame stays on screen
+ between ticks, so a single tmux capture-pane -p sees it. No word matching — "working"/"thinking" fired on token
+ counters and file paths, so the rule is the whole glyph block.
+
+ Blocked: the pane draws the question itself. For pi that's the ask-user-question hint line, matched on its
+ invariant prefix ("Enter to select · ↑/↓ to navigate") with all whitespace squeezed out, so a mid-word wrap in a
+ narrow pane still matches. For grok it's the card that holds the turn open — 1/4:select, Tab:next answer, ◇ Waiting
+ on answers for ….
+
+ Blocked is tested before working on purpose, so a question can't be masked by an incidental spinner. And the screen
+ isn't the only witness: if the pane's foreground process is gone or back at a shell, the state is idle no matter
+ what leftover TUI frame is painted.
+
+ The other half of that confusion is idle-vs-finished — a pane that already worked and stopped is pinned via the
+ tmux pane option @tmuxrd_finished, so it renders as finished rather than idle.
+
+ Honest limit: it's a scraper. A TUI that streams plain prose with neither a spinner nor a question card reads as
+ unknown, not working.
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~
+↑29k ↓8.2k R250k CH91.1% $0.010 3.3%/1.0M (auto)                             (opencode-go) deepseek-v4.1-flash • high

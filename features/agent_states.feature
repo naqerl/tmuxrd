@@ -50,6 +50,22 @@ Feature: The sidebar renders each agent's state with the right glyph
     And the sidebar is showing agent rows
     Then the sidebar should show agent "pi" as "?"
 
+  Scenario: A transcript that quotes the hint line is not a question
+    # features/testdata/pi-prose-quotes-hint.txt is a verbatim
+    # `tmux capture-pane -p` of a live pi pane whose viewport shows a write-up
+    # of tmuxrd's own detection: the prose quotes the dialog's hint line
+    # ("Enter to select · ↑/↓ to navigate"). The matcher searched the whole
+    # viewport for that string, so a pane that merely *describes* the dialog —
+    # that wiki page, `cat internal/detect/pi.go`, a diff of this file — was
+    # reported as blocked. No question is on screen here: the last rows are
+    # pi's own rules and status line.
+    Given session "s1" is created with agent windows:
+      | agent | screen                                     |
+      | pi    | features/testdata/pi-prose-quotes-hint.txt |
+    When I toggle the sidebar on
+    And the sidebar is showing agent rows
+    Then the sidebar should show agent "pi" as "○"
+
   Scenario: An idle agent that never started shows the "○" glyph
     Given session "s1" is created with agent windows:
       | agent | state |
