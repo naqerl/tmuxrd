@@ -256,12 +256,14 @@ A [citydiff](https://github.com/naqerl/citydiff) tour walks that split step by s
 level, declarations, then call paths. Two are published on the hub at
 <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/>:
 
-- **tmuxrd: how the sidebar knows** (`v0.2.0..v0.3.0`) — the daemon/client split, the tmux
-  boundary, inferred state, the pi question rule, the finished pin, the glyph layer and the test
-  harness: <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-how-the-sidebar-knows>
-- **tmuxrd: one detector per agent** (`v0.3.0..v0.4.0`) — the `AgentDetector` registry, the state
-  iota, pi's rules extracted, the GrokDetector and its captures, and the fake agent that draws
-  per-persona screens: <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-one-detector-per-agent>
+- **tmuxrd: how the sidebar knows** — the architecture, walked over the tree at `main` (a
+  citydiff *snapshot*: one ref, nothing to diff): the daemon/client split, the tmux boundary, the
+  detector registry and the state iota, pi's question rule, grok's captures, the glyph layer,
+  adaptive layout, navigation and the test harness.
+  <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-how-the-sidebar-knows>
+- **tmuxrd: one detector per agent** (`v0.3.0..v0.4.0`) — the same ground as a *change*: what the
+  detector registry replaced, and why grok needed a detector of its own.
+  <https://citydiff.naqerl.com/o/71ce56db-1794-4eb7-af57-474f8196c483/?tour=tmuxrd-one-detector-per-agent>
 
 ## Commands
 
