@@ -31,9 +31,12 @@ type stateMsg struct {
 // workTime times one pane's current working period: since is when the period
 // started (zero when the pane is not working) and last is the duration the
 // previous period reached, kept so the sidebar can show it while stopped.
+// hold is when the current run of Unknown readings began (zero otherwise), the
+// clock behind unknownGrace.
 type workTime struct {
 	last  time.Duration
 	since time.Time
+	hold  time.Time
 }
 
 var socketPath string
@@ -59,6 +62,16 @@ func initSocketPath(srv tmux.Server) {
 // for an agent that has finished a run and reserve ○ for one that never
 // started.
 const paneFinishedOption = "@tmuxrd_finished"
+
+// unknownGrace is how long a pane may read unread before its working period is
+// really closed. "The screen said nothing" is not "the agent stopped": pi draws
+// its spinner in the editor's top border and the slash-command menu below the
+// editor's bottom border, so the spinner can leave the tail window the detector
+// reads while the turn is still live. Holding the period across those ticks
+// keeps the timer honest (it counts on and never restarts), and the grace bounds
+// the damage when a pane has genuinely gone quiet — a stopped agent whose screen
+// the detector cannot read still shows its ✓ a few seconds later.
+const unknownGrace = 10 * time.Second
 
 func cmdDaemon() {
 	srv := tmux.NewServerFromEnv()
@@ -100,7 +113,9 @@ func cmdDaemon() {
 	layoutOpts := layout.OptionsFromServer(srv)
 	// applyWorkTime times the current working period for each pane. Starting to
 	// work (re)sets it, so an agent that goes idle and then works again starts
-	// from zero rather than resuming; stopping freezes the value it reached.
+	// from zero rather than resuming; stopping freezes the value it reached. A
+	// reading of Unknown holds the period open instead of closing it (see
+	// unknownGrace).
 	applyWorkTime := func(res []detect.Result, now time.Time) {
 		seen := make(map[string]bool, len(res))
 		for i := range res {
@@ -139,9 +154,29 @@ func cmdDaemon() {
 					wt.since = now
 					wt.last = 0
 				}
+				wt.hold = time.Time{}
 				r.Worked = now.Sub(wt.since)
 				continue
 			}
+			if r.Unread && !wt.since.IsZero() {
+				// A gap in detection, not a stop. Hold the period open and keep
+				// timing: an overlay drawn over the spinner must not reset a run
+				// that is still going. After unknownGrace the pane is treated as
+				// stopped, so an agent that has really gone quiet is not timed
+				// forever. A pane that never worked has nothing to hold.
+				if wt.hold.IsZero() {
+					wt.hold = now
+				}
+				if now.Sub(wt.hold) < unknownGrace {
+					// Still inside the grace: report the run as live, so the sidebar
+					// keeps the spinner and the timer counts on instead of dropping
+					// to 0s the moment the overlay closes.
+					r.State = detect.Working
+					r.Worked = now.Sub(wt.since)
+					continue
+				}
+			}
+			wt.hold = time.Time{}
 			if !wt.since.IsZero() {
 				wt.last = now.Sub(wt.since)
 				wt.since = time.Time{}
@@ -219,7 +254,7 @@ func cmdDaemon() {
 					case "notify":
 						go refresh()
 					case "focus":
-						srv.FocusPane(m.Pane)
+						srv.FocusPane("", m.Pane)
 					case "quit":
 						select {
 						case stop <- struct{}{}:

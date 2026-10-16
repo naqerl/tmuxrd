@@ -199,7 +199,13 @@ so the display code switches over a closed set. The rules each detector applies:
   transcript as a scalar summary, so the hint line does not linger. The words are not unique to the
   dialog, though — a pane showing a write-up *about* this detector, `cat internal/detect/pi.go`, or
   a diff of this file quotes them — so the match is confined to the pane's last rows and must begin
-  a row, followed by the next `·`-separated hint (English locale only.)
+  a row, followed by the next `·`-separated hint (English locale only.) Working is a braille frame
+  in the usual tail window, **or** a spinner embedded in a horizontal border (`── ⠼ Working ──…`)
+  anywhere on the screen: pi draws the slash-command menu *below* the editor's bottom border, so an
+  open menu pushes the border (and the spinner) out of the tail while the turn is still running.
+  Idle is structural too: pi's editor box is on screen with plain border rows and no spinner, which
+  covers the idle pane whether its input is empty or holds a draft. Without that rule an idle pi
+  showed no prompt glyph anywhere and read as `unknown`.
 - **grok** (`GrokDetector`) — rules taken from captures of the real CLI (they are the fixtures in
   `features/testdata/grok-*.txt`): blocked is the two cards that hold a turn open — an approval
   card, which counts its options (`1/4:select │ Tab:next option │ …`), and the question tool,
@@ -225,9 +231,17 @@ attach. `Working` and `Blocked` win over `Finished`: a live turn or a question i
 the pin.
 
 The timer is owned by the daemon and measures the **current** working period: it starts when the
-agent starts working, is frozen when it stops, and restarts from zero the next time the agent
-starts working. Unlike the pin it is not persisted, so a daemon restart resets the timer (but not
-the checkmark).
+agent starts working and restarts from zero only when a new period begins. `idle` and `blocked`
+close it immediately, and so does a `finished` that came from a readable idle screen.
+
+An **unread** tick does not close it. `Result.Unread` marks the ticks where the detector answered
+`unknown` — the screen said nothing — before the pin could promote that to `finished`. "I cannot
+read the screen" is not "the agent stopped", so the daemon holds the period open and keeps timing
+(and keeps reporting the pane as working) for up to `unknownGrace` (10 s). After that the pane is
+treated as stopped and the pin's ✓ appears, so an agent that really has gone quiet is not timed
+forever. The grace is a bridge for a transient overlay or redraw, not a place for a detector to
+live: a screen shape that keeps reading unread wants a rule. Unlike the pin the timer is not
+persisted, so a daemon restart resets it (but not the checkmark).
 
 ## Development
 
@@ -284,8 +298,10 @@ level, declarations, then call paths. Two are published on the hub at
 - pi's blocked detection matches the dialog's English hint line; a non-English locale would not be
   recognised. While the dialog is collapsed (`Ctrl+]`) it renders a single `… to expand · Esc to
   cancel` row, which is not specific enough to anchor on and is reported unknown.
-- Working detection is braille-spinner only. An agent that shows no braille spinner while working
-  will not be reported as working.
+- Working detection is braille-spinner only — a frame in the pane's last rows, or in a border row
+  (`── ⠼ …`). An agent that shows no braille spinner while working will not be reported as working.
+- A pane the detector cannot read at all (no braille, no prompt tail, no known marker) is `unknown`.
+  The daemon holds its timer for `unknownGrace` and then falls back to the pin's ✓.
 - The `✓` marker is one per **pane**, not per agent process: quitting pi and starting a new one in
   the same pane keeps the `✓` until it works again or you view the pane.
 - "Viewed" is per session: a window counts as seen when it is its session's current window *and*

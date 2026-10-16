@@ -34,13 +34,22 @@ type model struct {
 	// --side, or $TMUXRD_LAYOUT) for tests and debugging.
 	strip bool
 	force string
-	spin  spinner.Model
+	// pane is this sidebar's own pane ($TMUX_PANE), the context for resolving
+	// which tmux client a key event belongs to.
+	pane string
+	// lastPush is when the daemon last sent a state snapshot. It gates the
+	// local re-detect: the daemon is the authority, so the 5s tick only
+	// re-detects when the stream has gone quiet.
+	lastPush time.Time
+	spin     spinner.Model
 }
 
 // newModel builds a client model with the working spinner ready to animate.
 func newModel(srv tmux.Server) model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
-	return model{srv: srv, spin: s, force: layoutOverride()}
+	// This pane is the sidebar: a key event that arrives here belongs to the
+	// client attached to this pane's session (see Server.drivingClient).
+	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE")}
 }
 
 // layoutOverride reads $TMUXRD_LAYOUT ("strip" or "side"), or "" to let the
@@ -90,10 +99,10 @@ func (m *model) moveTo(i int, focusAgent bool) {
 	}
 	m.cursor = i
 	if focusAgent {
-		m.srv.FocusPane(m.results[i].PaneID)
+		m.srv.FocusPane(m.pane, m.results[i].PaneID)
 		return
 	}
-	m.srv.GoToAgent(m.results[i].PaneID)
+	m.srv.GoToAgent(m.pane, m.results[i].PaneID)
 }
 
 // handleMouse turns a tap or wheel event into a selection. This is what makes
@@ -155,8 +164,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stateUIMsg:
 		m.results = msg.Results
+		m.lastPush = time.Now()
 		m.syncMarker()
 	case tickMsg:
+		// The daemon is the authority, and it knows things the screen alone does
+		// not: it holds a working period across a detection gap (unknownGrace in
+		// the daemon) and it consumes the finished pin. Re-detecting locally on
+		// every 5s tick overrode those with the raw screen state for one frame —
+		// a row that the daemon is holding as working blinked back to the raw
+		// state every 5s. So the local detect is a fallback only: it runs when
+		// the stream has gone quiet (a daemon restart, a dead socket), which is
+		// the case it was written for.
+		if time.Since(m.lastPush) < 2*stateInterval {
+			return m, tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+		}
 		// Keep the daemon's accumulated work time: this local fallback cannot
 		// know it, and losing it would make the timer flicker every 5s.
 		prev := make(map[string]time.Duration, len(m.results))
@@ -170,8 +191,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncMarker()
-		// Local fallback only: the daemon pushes state every 500ms, so this
-		// 5s re-detect matters only when the connection is briefly down.
 		return m, tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 	case spinner.TickMsg:
 		// Advance only the spinner animation; never re-run detection here.
@@ -204,7 +223,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.goTo(m.cursor - 1)
 		case "enter":
 			if m.cursor >= 0 && m.cursor < len(m.results) {
-				m.srv.FocusPane(m.results[m.cursor].PaneID)
+				m.srv.FocusPane(m.pane, m.results[m.cursor].PaneID)
 			}
 		default:
 			// 1-9 jump straight to the Nth agent and switch the view to it, so a

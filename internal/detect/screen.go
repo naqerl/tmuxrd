@@ -1,7 +1,9 @@
 package detect
 
 import (
+	"regexp"
 	"strings"
+	"unicode"
 )
 
 // View is what a detector gets to look at: the process that owns the pane and
@@ -113,6 +115,45 @@ func hasBraille(lines []string) bool {
 		}
 	}
 	return false
+}
+
+// borderSpinnerRe matches a spinner embedded in a horizontal border — the shape
+// pi draws in the editor's top border, "── ⠼ Working ──…". The label and the
+// rest of the rule change with the state ("Working", "Retrying (1/3)…",
+// "Compacting context…"), so the run of rule plus the braille frame is the
+// invariant. Up to four dashes and one optional space keep it to the leading
+// cells: a braille character deep inside ordinary text does not match.
+var borderSpinnerRe = regexp.MustCompile(`─{1,4} ?[` + brailleSpinner + `]`)
+
+// borderSpinner reports whether the screen carries a spinner in a border. It is
+// how pi is recognised when the spinner is nowhere near the bottom of the pane:
+// pi renders the slash-command menu *below* the editor's bottom border, which
+// pushes the border out of the tail window while the turn is still running.
+// Without this, opening the `/` menu mid-turn read as Unknown and closed the
+// working period (the timer restarted from zero when the menu closed).
+func borderSpinner(screen string) bool {
+	return borderSpinnerRe.MatchString(screen)
+}
+
+// borderRow reports whether a line is a horizontal rule — one of the two rows
+// that box an agent's editor ("──────────────"), optionally carrying the scroll
+// indicator pi draws in it ("────── ↑ 12 more ──────"). Rendered tables and
+// rules in a transcript can look like this, which is why it is only consulted
+// after working and blocked have been ruled out.
+func borderRow(line string) bool {
+	dashes, other := 0, 0
+	for _, r := range strings.TrimSpace(line) {
+		switch {
+		case r == '─':
+			dashes++
+		case unicode.IsSpace(r):
+		default:
+			other++
+		}
+	}
+	// pi's editor box is 9 dashes wide even in a narrow pane; the noise budget
+	// (arrows, a digit count) must stay a small fraction of the rule.
+	return dashes >= 8 && other <= dashes/4
 }
 
 // restingState is the shared tail of the rule order: an agent that is neither

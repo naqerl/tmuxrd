@@ -29,8 +29,23 @@ func (PiDetector) Detect(v View) (State, bool) {
 	if piAwaitingAnswer(tail) {
 		return Blocked, true
 	}
-	if hasBraille(tail) {
+	// The border scan covers a spinner the tail window cannot see: pi draws the
+	// slash-command menu below the editor's bottom border, so an open menu pushes
+	// the editor's top border (and the spinner in it) far above the last rows.
+	if hasBraille(tail) || borderSpinner(v.Screen) {
 		return Working, true
+	}
+	// Idle, structurally: the editor's plain border rows are on screen and no
+	// spinner is anywhere (the check above would have found one). pi's input row
+	// carries no prompt glyph, so without this a pi sitting at its prompt — with
+	// an empty input or with a draft — was unreadable: it showed no ✓ when its
+	// run ended, and the daemon held the dead period as working for the grace.
+	// Blocked was checked before, so the question dialog (which replaces the
+	// editor but still leaves a rule above the hint) is not caught here.
+	for _, line := range tail {
+		if borderRow(line) {
+			return Idle, true
+		}
 	}
 	return restingState(tail), true
 }

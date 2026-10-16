@@ -32,6 +32,12 @@ type Result struct {
 	// Viewed mirrors tmux.Pane.Viewed: the pane is in the window a client is
 	// looking at, so the daemon can consume the pin there.
 	Viewed bool
+	// Unread is true when the detector could not name the state (it answered
+	// Unknown) and what State holds is a guess — the pin may have promoted it to
+	// Finished. The daemon uses it to tell "the agent stopped" from "the screen
+	// said nothing": a working period is held open across an Unread tick instead
+	// of being closed, so a transient overlay cannot reset the timer.
+	Unread bool
 }
 
 // Detect classifies every agent pane of the server, in tmux order. A pane no
@@ -56,15 +62,20 @@ func Detect(s tmux.Server) []Result {
 		if fc == "" || isShell(fc) {
 			st = Idle
 		}
+		unread := st == Unknown
 		// Promote an idle pinned pane to the finished state. Working and blocked
-		// win: a live turn or a question is never masked by the pin.
+		// win: a live turn or a question is never masked by the pin. Unknown also
+		// promotes — a pane whose screen the detector cannot read has still
+		// stopped, and losing the ✓ for it would be worse than the guess. Unread
+		// keeps that guess distinguishable, so a transient overlay over a live run
+		// does not close its working period (see the daemon's unknownGrace).
 		if p.Pinned && (st == Idle || st == Unknown) {
 			st = Finished
 		}
 		out = append(out, Result{
 			PaneID: p.ID, Agent: agent, State: st, Path: p.Path,
 			Session: p.Session, Window: p.Window, WindowName: p.WindowName,
-			Pinned: p.Pinned, Viewed: p.Viewed,
+			Pinned: p.Pinned, Viewed: p.Viewed, Unread: unread,
 		})
 	}
 	return out
