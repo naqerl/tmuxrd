@@ -236,18 +236,17 @@ func (s Server) sidebarPaneInWindow(paneID string) string {
 	return ""
 }
 
-// GoToAgent switches the view to the pane's window and session (switch-client
-// handles the cross-session case; select-window moves the view when no client
-// is attached) but leaves the keyboard on that window's sidebar pane, so the
-// sidebar can keep navigating after the view has moved.
-func (s Server) GoToAgent(paneID string) {
-	s.Run("switch-client", "-t", paneID)
-	s.Run("select-window", "-t", paneID)
+// GoToAgent switches the view to the pane's window and session and leaves the
+// keyboard on that window's sidebar pane, so the sidebar can keep navigating
+// after the view has moved (switch-client handles the cross-session case;
+// select-window moves the view when no client is attached). fromPane is the
+// sidebar that received the gesture ("" when the caller has no pane context).
+func (s Server) GoToAgent(fromPane, paneID string) {
+	target := paneID
 	if sb := s.sidebarPaneInWindow(paneID); sb != "" {
-		s.Run("select-pane", "-t", sb)
-		return
+		target = sb
 	}
-	s.Run("select-pane", "-t", paneID)
+	s.moveClient(fromPane, paneID, target)
 }
 
 // SelectPane focuses a pane: switch the client to its session, select its
@@ -258,14 +257,78 @@ func (s Server) GoToAgent(paneID string) {
 // select-pane alone only sets the active pane of a window you are not looking
 // at — so without select-window, focusing an agent in another window appears to
 // do nothing.
-func (s Server) SelectPane(paneID string) {
-	s.Run("switch-client", "-t", paneID)
-	s.Run("select-window", "-t", paneID)
-	s.Run("select-pane", "-t", paneID)
+func (s Server) SelectPane(fromPane, paneID string) {
+	s.moveClient(fromPane, paneID, paneID)
 }
 
 // FocusPane is SelectPane under the name the client uses.
-func (s Server) FocusPane(paneID string) { s.SelectPane(paneID) }
+func (s Server) FocusPane(fromPane, paneID string) { s.SelectPane(fromPane, paneID) }
+
+// moveClient moves the client that sent the gesture to view's session and
+// window, and leaves the keyboard on focus. It is ONE tmux invocation: run as
+// separate invocations, the client repainted once when the view landed and again
+// when the keyboard moved, which reads as a flicker through intermediate frames.
+//
+// The order is load-bearing. tmux stops processing a ';'-separated list at the
+// first command that fails, so the two commands that always work — moving the
+// session's window and its active pane — come first, and switch-client, which
+// fails on a server with no client attached (a detached test server, an ssh
+// driven server) and can race a client that just detached, comes last. With the
+// switch first, a client-less server moved nothing at all: the view stayed put
+// and only the error was left behind.
+func (s Server) moveClient(fromPane, view, focus string) {
+	args := []string{"select-window", "-t", view, ";", "select-pane", "-t", focus}
+	if c := s.drivingClient(fromPane); c != "" {
+		args = append(args, ";", "switch-client", "-c", c, "-t", view)
+	}
+	s.Run(args...)
+}
+
+// drivingClient names the client a gesture belongs to. A command run from a pane
+// process carries no client context, so switch-client with no -c moves an
+// arbitrary client — in practice the last one tmux iterates — and on a server
+// with two attached terminals a keystroke in one moved the other. The gesture's
+// client is the most recently active client attached to fromPane's session: the
+// one whose keyboard just produced the event. The name is what -c wants (a
+// client's name is its tty, or client-<pid> for a control client); a pid is not
+// a client target. "" (nothing attached, a detached server, no pane context)
+// leaves the choice to tmux.
+func (s Server) drivingClient(fromPane string) string {
+	if fromPane == "" {
+		return ""
+	}
+	sess, _ := s.Run("display-message", "-p", "-t", fromPane, "#{session_name}")
+	sess = strings.TrimSpace(sess)
+	if sess == "" {
+		return ""
+	}
+	// A control client (`tmux -C`, the kind scripts and the test harness
+	// attach) is never the client a human pressed a key in, so it only wins when
+	// no real client is attached at all.
+	out, _ := s.Run("list-clients", "-t", sess, "-F", "#{client_activity}\t#{client_control_mode}\t#{client_name}")
+	best, bestAct, bestReal, bestRealAct := "", int64(-1), "", int64(-1)
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Split(line, "\t")
+		if len(f) != 3 {
+			continue
+		}
+		act, err := strconv.ParseInt(strings.TrimSpace(f[0]), 10, 64)
+		if err != nil {
+			continue
+		}
+		name := strings.TrimSpace(f[2])
+		if act > bestAct {
+			bestAct, best = act, name
+		}
+		if strings.TrimSpace(f[1]) == "0" && act > bestRealAct {
+			bestRealAct, bestReal = act, name
+		}
+	}
+	if bestReal != "" {
+		return bestReal
+	}
+	return best
+}
 
 // Option sets a global option.
 func (s Server) Option(name, value string) { s.Run("set-option", "-gq", name, value) }
