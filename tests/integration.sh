@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 SOCK="tmuxrd-int"
-ROOT="/home/user/terdr"
+ROOT="/home/user/src/tmuxrd"
 BIN="$ROOT/bin/tmuxrd"
 tmux -L "$SOCK" kill-server 2>/dev/null || true
 tmux -L "$SOCK" new-session -d -s t 'sleep 1000'

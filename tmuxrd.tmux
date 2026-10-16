@@ -9,7 +9,7 @@
 
 # Repo root. A pre-set @tmuxrd_root wins, so the default is only a fallback
 # (the true-branch is a no-op just to keep tmux's if-shell happy).
-if-shell -F '#{@tmuxrd_root}' 'source-file /dev/null' 'set-option -gq @tmuxrd_root /home/user/terdr'
+if-shell -F '#{@tmuxrd_root}' 'source-file /dev/null' 'set-option -gq @tmuxrd_root /home/user/src/tmuxrd'
 
 run-shell -b "#{@tmuxrd_root}/bin/tmuxrd daemon >/dev/null 2>&1"
 
