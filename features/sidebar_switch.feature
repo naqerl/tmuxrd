@@ -34,32 +34,32 @@ Feature: Sidebar reflects window focus quickly and stays consistent
     When I focus the sidebar pane
     Then the sidebar should still show a selection marker
 
-  Scenario: Navigating switches the view to the next agent
-    # j/k must move the *view* (window/session), not just the marker; Enter is
-    # what then moves the keyboard into the agent pane.
+  Scenario: j only moves the selection marker, the view stays
+    # j/k preview: the view and the keyboard stay on the sidebar; the marker
+    # moves. Enter commits, Esc/C-g returns to the origin pane.
     Given the sidebar is showing agent rows
     When I select window "0"
     Then the sidebar should select window "0" within 250ms
     When I press the "j" key in the sidebar
-    Then window "1" should be the active window of session "s1"
-    And the sidebar should select window "1" within 250ms
+    Then the sidebar should select window "1" within 250ms
+    And window "0" should be the active window of session "s1"
 
-  Scenario: Navigating back switches the view back
+  Scenario: k only moves the selection marker back, the view stays
     Given the sidebar is showing agent rows
     When I select window "2"
     Then the sidebar should select window "2" within 250ms
     When I press the "k" key in the sidebar
-    Then window "1" should be the active window of session "s1"
-    And the sidebar should select window "1" within 250ms
+    Then the sidebar should select window "1" within 250ms
+    And window "2" should be the active window of session "s1"
 
-  Scenario: Enter focuses the pointed agent's window
+  Scenario: Enter focuses the pointed agent's pane
     Given the sidebar is showing agent rows
     When I select window "0"
     Then the sidebar should select window "0" within 250ms
     When I press the "j" key in the sidebar
-    Then window "1" should be the active window of session "s1"
     When I press the "Enter" key in the sidebar
-    Then window "1" should have its agent pane focused
+    Then window "1" should be the active window of session "s1"
+    And window "1" should have its agent pane focused
 
   Scenario: Focusing the sidebar keeps the window named after its agent
     # tmux renames a window from its active pane, so without pinning the name the

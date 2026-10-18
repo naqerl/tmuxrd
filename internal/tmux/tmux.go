@@ -264,6 +264,14 @@ func (s Server) SelectPane(fromPane, paneID string) {
 // FocusPane is SelectPane under the name the client uses.
 func (s Server) FocusPane(fromPane, paneID string) { s.SelectPane(fromPane, paneID) }
 
+// HoldPane makes paneID the active pane of its window without moving the view.
+// It is what a key press inside a sidebar pane needs: the user is obviously
+// already looking at that pane's window, so select-window here would only be a
+// way to *drag* the view to whichever sidebar received the key — including a
+// window the user did not choose. select-pane alone cannot do that, and it is
+// a no-op (not a flicker) when the pane is already active.
+func (s Server) HoldPane(fromPane, paneID string) { s.Run("select-pane", "-t", paneID) }
+
 // moveClient moves the client that sent the gesture to view's session and
 // window, and leaves the keyboard on focus. It is ONE tmux invocation: run as
 // separate invocations, the client repainted once when the view landed and again

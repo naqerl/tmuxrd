@@ -116,5 +116,6 @@ Feature: The sidebar adapts its shape to the window width
     And I select window "0"
     Then the sidebar should select window "0" within 250ms
     When I press the "j" key in the sidebar
-    Then window "1" should be the active window of session "s1"
-    And window "1" of session "s1" should have its sidebar pane focused
+    Then the sidebar should select window "1" within 250ms
+    And window "0" should be the active window of session "s1"
+    And window "0" of session "s1" should have its sidebar pane focused

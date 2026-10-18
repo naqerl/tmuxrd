@@ -39,6 +39,11 @@ type model struct {
 	pane string
 	// originPane is the pane the user was on before entering tmuxrd; Esc/C-g restores to it.
 	originPane string
+	// chosen is set once the user has picked a row by hand (j/k, a tap, 1-9).
+	// While it is set, daemon pushes must not re-sync the cursor to the window
+	// in view — the selection is the user's, the view has not moved (j/k only
+	// preview). Esc/C-g resets both the focus and the flag.
+	chosen bool
 	// lastPush is when the daemon last sent a state snapshot. It gates the
 	// local re-detect: the daemon is the authority, so the 5s tick only
 	// re-detects when the stream has gone quiet.
@@ -82,6 +87,9 @@ func layoutOverride() string {
 // without shared state: focusing an agent's sidebar still shows that agent
 // marked, while a non-agent window shows no marker at all.
 func (m *model) syncMarker() {
+	if m.chosen {
+		return // the selection belongs to the user; the view has not moved
+	}
 	_, sess, win := m.srv.CurrentTarget()
 	m.cursor = -1
 	if sess == "" {
@@ -95,25 +103,25 @@ func (m *model) syncMarker() {
 	}
 }
 
-// goTo selects row i and switches the view to that agent's window, leaving the
-// keyboard on a sidebar so navigation can continue (j/k, Tab, the wheel).
-func (m *model) goTo(i int) { m.moveTo(i, false) }
-
 // jumpTo selects row i, switches the view, and puts the keyboard in the agent's
 // pane. That is what a tap or a number key should do: on a touch client the
 // point of selecting is to land in the agent ready to type.
-func (m *model) jumpTo(i int) { m.moveTo(i, true) }
-
-func (m *model) moveTo(i int, focusAgent bool) {
+func (m *model) jumpTo(i int) {
 	if i < 0 || i >= len(m.results) {
 		return
 	}
+	m.chosen = true
 	m.cursor = i
-	if focusAgent {
-		m.srv.FocusPane(m.pane, m.results[i].PaneID)
+	m.srv.FocusPane(m.pane, m.results[i].PaneID)
+}
+
+// commit presses Enter on the selected row: switch the view to the agent's
+// window and put the keyboard in its pane.
+func (m *model) commit() {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
 		return
 	}
-	m.srv.GoToAgent(m.pane, m.results[i].PaneID)
+	m.srv.FocusPane(m.pane, m.results[m.cursor].PaneID)
 }
 
 // handleMouse turns a tap or wheel event into a selection. This is what makes
@@ -122,10 +130,16 @@ func (m *model) moveTo(i int, focusAgent bool) {
 func (m *model) handleMouse(e tea.MouseEvent) {
 	switch e.Button {
 	case tea.MouseButtonWheelUp:
-		m.goTo(m.cursor - 1)
+		m.chosen = true
+		if m.cursor-1 >= 0 {
+			m.cursor--
+		}
 		return
 	case tea.MouseButtonWheelDown:
-		m.goTo(m.cursor + 1)
+		m.chosen = true
+		if m.cursor+1 < len(m.results) {
+			m.cursor++
+		}
 		return
 	}
 	// A tap arrives as a left press; ignore release, motion and other buttons.
@@ -276,13 +290,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "j", "down", "ctrl+n", "tab", "l", "right":
-			m.goTo(m.cursor + 1)
-		case "k", "up", "ctrl+p", "shift+tab", "h", "left":
-			m.goTo(m.cursor - 1)
-		case "enter":
-			if m.cursor >= 0 && m.cursor < len(m.results) {
-				m.srv.FocusPane(m.pane, m.results[m.cursor].PaneID)
+			// j/k move only the selection marker: the view stays put (a
+			// "preview"). Enter commits; Esc/C-g returns to the origin pane.
+			m.chosen = true
+			if m.cursor+1 < len(m.results) {
+				m.cursor++
+			} else if len(m.results) == 0 {
+				m.cursor = -1
 			}
+			if m.cursor >= 0 {
+				m.srv.HoldPane(m.pane, m.pane) // the keyboard is here; keep tmux focus, not the view
+			}
+		case "k", "up", "ctrl+p", "shift+tab", "h", "left":
+			m.chosen = true
+			if m.cursor-1 >= 0 {
+				m.cursor--
+			} else if len(m.results) == 0 {
+				m.cursor = -1
+			}
+			if m.cursor >= 0 {
+				m.srv.HoldPane(m.pane, m.pane) // the keyboard is here; keep tmux focus, not the view
+			}
+		case "enter":
+			m.commit()
 		default:
 			// 1-9 jump straight to the Nth agent and switch the view to it, so a
 			// phone (no arrow keys) can drive the sidebar with one tap each.
