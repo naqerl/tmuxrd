@@ -41,6 +41,15 @@ type workTime struct {
 
 var socketPath string
 
+// runtimeBase is the directory the daemon socket and the adapt lock live in:
+// the user's runtime dir when there is one, the temp dir otherwise.
+func runtimeBase() string {
+	if base := os.Getenv("XDG_RUNTIME_DIR"); base != "" {
+		return base
+	}
+	return os.TempDir()
+}
+
 // initSocketPath derives the daemon's Unix socket. It is namespaced by the tmux
 // socket name so that two different tmux servers each get their own daemon and
 // never collide on a single shared path.
@@ -48,12 +57,33 @@ func initSocketPath(srv tmux.Server) {
 	if socketPath != "" {
 		return
 	}
-	base := os.Getenv("XDG_RUNTIME_DIR")
-	if base == "" {
-		base = os.TempDir()
-	}
 	name := srv.SocketFile()
-	socketPath = filepath.Join(base, "tmuxrd-"+name+".sock")
+	socketPath = filepath.Join(runtimeBase(), "tmuxrd-"+name+".sock")
+}
+
+// adaptLockPath is the per-server advisory lock file that serialises sidebar
+// creation. It sits next to the daemon socket and is keyed by the same tmux
+// socket identity, so exactly the `adapt --create` invocations aimed at one tmux
+// server exclude each other — and no two servers share a lock.
+func adaptLockPath(srv tmux.Server) string {
+	return filepath.Join(runtimeBase(), "tmuxrd-"+srv.SocketFile()+".adapt.lock")
+}
+
+// lockAdapt takes the exclusive adapt lock. The returned file must stay open
+// for the lock to be held; the caller closes it (or exits, which closes it).
+// Blocking LOCK_EX is deliberate: concurrent after-new-* hooks queue behind the
+// first, and by the time each gets the lock the sidebars it would have created
+// already exist in the pane list it is about to read.
+func lockAdapt(srv tmux.Server) (*os.File, error) {
+	f, err := os.OpenFile(adaptLockPath(srv), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // paneFinishedOption is the per-pane marker the daemon sets the first time it
@@ -195,11 +225,19 @@ func cmdDaemon() {
 		// each decide a window is missing its sidebar and split twice.
 		refreshMu.Lock()
 		defer refreshMu.Unlock()
+		// One list-panes per refresh: the layout pass and detection read the
+		// same snapshot, so a refresh costs one listing plus one capture per
+		// agent pane (not one listing per phase and a capture per pane).
+		panes, err := srv.ListPanes()
+		if err != nil {
+			panes = nil
+		}
 		// Keep every sidebar the shape its window's width calls for. Reshape
 		// only: creating panes is the config hooks' job, so a server that never
-		// loaded tmuxrd never grows sidebars.
-		layout.Ensure(srv, layoutOpts, false)
-		res := detect.Detect(srv)
+		// loaded tmuxrd never grows sidebars. The same pass reaps duplicate
+		// sidebars, so an already-poisoned server heals here.
+		layout.EnsurePanes(srv, panes, layoutOpts, false)
+		res := detect.DetectPanes(srv, panes)
 		now := time.Now()
 		mu.Lock()
 		applyWorkTime(res, now)
@@ -222,6 +260,21 @@ func cmdDaemon() {
 			}
 		}
 	}
+
+	// Coalesce notify bursts into (at most) one queued refresh. A burst of tmux
+	// hooks — one `j` can fire pane-focus-in and after-select-pane together, and
+	// a resize fires window-layout-changed for each step — used to start one full
+	// refresh each, each listing and capturing every agent. A capacity-1 channel
+	// with a single worker collapses them: the first notify starts a refresh
+	// immediately (no added latency a user could see), and any that arrive while
+	// it runs leave a single token behind, so at most one more refresh follows.
+	// refreshMu still serialises the worker against the ticker.
+	notify := make(chan struct{}, 1)
+	go func() {
+		for range notify {
+			refresh()
+		}
+	}()
 
 	// accept loop
 	// stop is signalled by the "quit" message, which `tmuxrd stop` sends: a
@@ -252,7 +305,10 @@ func cmdDaemon() {
 					}
 					switch m.Cmd {
 					case "notify":
-						go refresh()
+						select {
+						case notify <- struct{}{}:
+						default:
+						}
 					case "focus":
 						srv.FocusPane("", m.Pane)
 					case "quit":
@@ -341,6 +397,12 @@ func cmdStop() {
 // the daemon does every tick). With --create it also gives a window whose
 // sidebar is missing one in the right shape — the toggle and ensure scripts use
 // that so a new window opens already adapted.
+//
+// --create is single-owner: concurrent hook invocations (run-shell -b
+// backgrounds each one) would otherwise each read "no sidebar" and each split
+// one in. An exclusive advisory lock is held across the pane list and the create
+// pass, so the first caller creates and every later caller re-reads a list that
+// already contains those sidebars.
 func cmdAdapt() {
 	srv := tmux.NewServerFromEnv()
 	create := false
@@ -349,7 +411,37 @@ func cmdAdapt() {
 			create = true
 		}
 	}
-	if err := layout.Ensure(srv, layout.OptionsFromServer(srv), create); err != nil {
+	// Read the tunables before locking: they are three tmux calls, and holding
+	// the lock for them would only delay the other hook invocations.
+	opts := layout.OptionsFromServer(srv)
+
+	if !create {
+		if err := layout.Ensure(srv, opts, false); err != nil {
+			fmt.Fprintln(os.Stderr, "adapt:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if f, err := lockAdapt(srv); err == nil {
+		defer func() {
+			syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			f.Close()
+		}()
+	} else {
+		// An unwritable runtime dir should not stop the sidebar from adapting;
+		// the layout pass's self-heal still bounds any duplicates this lets
+		// through.
+		fmt.Fprintln(os.Stderr, "adapt: lock:", err)
+	}
+	// List after taking the lock and build from that list, or the snapshot would
+	// predate the winner's sidebars and this caller would create its own.
+	panes, err := srv.ListPanes()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "adapt:", err)
+		os.Exit(1)
+	}
+	if err := layout.EnsurePanes(srv, panes, opts, true); err != nil {
 		fmt.Fprintln(os.Stderr, "adapt:", err)
 		os.Exit(1)
 	}

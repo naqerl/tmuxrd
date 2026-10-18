@@ -15,6 +15,7 @@ package layout
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/naqerl/tmuxrd/internal/tmux"
 )
@@ -88,14 +89,31 @@ func Mode(windowWidth int, opts Options) string {
 // daemon must never create a pane before the config has installed its hooks, or
 // scenarios (and users) that never loaded tmuxrd would grow sidebars anyway.
 // create=true (the toggle/ensure script path) also creates a missing one.
+//
+// It is a thin wrapper over EnsurePanes for callers that hold no pane list; it
+// lists the server once and hands the panes over.
 func Ensure(srv tmux.Server, opts Options, create bool) error {
-	opts = opts.withDefaults()
-	if srv.ShowOption("@tmuxrd_enabled") == "0" {
-		return nil
-	}
 	panes, err := srv.ListPanes()
 	if err != nil {
 		return err
+	}
+	return EnsurePanes(srv, panes, opts, create)
+}
+
+// EnsurePanes is Ensure over an already-fetched pane list. Callers that also
+// need the pane list (the daemon refresh feeds both this pass and detection)
+// fetch it once and pass it here, so a refresh lists the server once rather
+// than once per phase.
+//
+// The pass also self-heals duplicate sidebars: if a window holds more than one
+// pane tagged @tmuxrd_sidebar=1, the first in tmux order is kept and the rest
+// are killed. That runs on every pass, including the daemon's create=false one,
+// so a server left with duplicates by an older build (or any future race) heals
+// within one tick and the sidebar count cannot grow again.
+func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) error {
+	opts = opts.withDefaults()
+	if srv.ShowOption("@tmuxrd_enabled") == "0" {
+		return nil
 	}
 
 	type window struct {
@@ -127,11 +145,20 @@ func Ensure(srv tmux.Server, opts Options, create bool) error {
 		}
 		w.panes++
 		if p.Sidebar {
-			w.sidebar = p
+			if w.sidebar == nil {
+				// First in tmux order wins: the panes arrive in pane-index order,
+				// so this is the oldest sidebar (lowest pane id) — a deterministic
+				// choice that leaves the survivor stable across passes.
+				w.sidebar = p
+			} else {
+				// A duplicate sidebar: a creation race (or an older build) left
+				// more than one. Reap it now, on every pass, not just when we would
+				// create; that is what bounds an already-poisoned server.
+				srv.KillPane(p.ID)
+			}
 		}
 	}
 
-	clientCmd := clientCommand()
 
 	for _, key := range order {
 		w := windows[key]
@@ -152,12 +179,12 @@ func Ensure(srv tmux.Server, opts Options, create bool) error {
 			if !create {
 				continue
 			}
-			// Re-check right before splitting: two callers (a hook and the
-			// daemon, or two hook firings) can both decide to create.
-			if srv.WindowHasSidebar(w.target) {
-				continue
-			}
-			createSidebar(srv, w.target, mode, clientCmd, opts)
+			// No last-instant re-check here: the create path serialises on an
+			// advisory lock taken before the pane list is fetched (see cmdAdapt),
+			// so a second caller re-reads a list that already contains the first
+			// caller's sidebar. That is what makes concurrent hook invocations
+			// idempotent without a check-then-act window.
+			createSidebar(srv, w.target, mode, opts)
 			continue
 		}
 
@@ -188,19 +215,28 @@ func Ensure(srv tmux.Server, opts Options, create bool) error {
 			continue
 		}
 		srv.KillPane(w.sidebar.ID)
-		createSidebar(srv, w.target, mode, clientCmd, opts)
+		createSidebar(srv, w.target, mode, opts)
 	}
 	return nil
 }
 
 // createSidebar splits a sidebar into target in the given shape and tags both
 // the pane (@tmuxrd_sidebar) and the window (@tmuxrd_layout).
-func createSidebar(srv tmux.Server, target, mode, clientCmd string, opts Options) {
+func createSidebar(srv tmux.Server, target, mode string, opts Options) {
 	axis, size := "h", opts.SideWidth
 	if mode == Strip {
 		axis, size = "v", opts.StripHeight
 	}
-	pid, err := srv.SplitPane(target, axis, size, clientCmd)
+	// Capture the pane that is active in target BEFORE the split, so the
+	// sidebar can restore focus to it on Esc/C-g. Inside the new sidebar
+	// pane, tmux resolves the "current" pane to the sidebar itself.
+	origin, _ := srv.Run("display-message", "-t", target, "-p", "#{pane_id}")
+	origin = strings.TrimSpace(origin)
+	cmd := clientCommand()
+	if origin != "" {
+		cmd = "env TMUXRD_ORIGIN_PANE=" + origin + " " + cmd
+	}
+	pid, err := srv.SplitPane(target, axis, size, cmd)
 	if err != nil || pid == "" {
 		return
 	}

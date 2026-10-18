@@ -37,11 +37,18 @@ type model struct {
 	// pane is this sidebar's own pane ($TMUX_PANE), the context for resolving
 	// which tmux client a key event belongs to.
 	pane string
+	// originPane is the pane the user was on before entering tmuxrd; Esc/C-g restores to it.
+	originPane string
 	// lastPush is when the daemon last sent a state snapshot. It gates the
 	// local re-detect: the daemon is the authority, so the 5s tick only
 	// re-detects when the stream has gone quiet.
 	lastPush time.Time
 	spin     spinner.Model
+	// spinning is whether the spinner tick is currently armed. The 12fps
+	// animation is only worth a repaint while some agent is Working; an idle
+	// sidebar must not re-render 12 times a second for nothing. It mirrors the
+	// tick's own lifetime, not "is anything working right now".
+	spinning bool
 }
 
 // newModel builds a client model with the working spinner ready to animate.
@@ -49,7 +56,11 @@ func newModel(srv tmux.Server) model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	// This pane is the sidebar: a key event that arrives here belongs to the
 	// client attached to this pane's session (see Server.drivingClient).
-	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE")}
+	origin := os.Getenv("TMUXRD_ORIGIN_PANE")
+	if origin == "" {
+		origin = srv.CurrentPane()
+	}
+	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE"), originPane: origin}
 }
 
 // layoutOverride reads $TMUXRD_LAYOUT ("strip" or "side"), or "" to let the
@@ -154,10 +165,36 @@ func (m model) sideRowAt(y int) (int, bool) {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
-		tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) }),
-		m.spin.Tick,
-	)
+	// The spinner tick is not started here: results arrive from the daemon, so
+	// nothing can be Working yet. The first snapshot that contains a working
+	// agent arms it (see the stateUIMsg case).
+	return tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// anyWorking reports whether any agent currently shows the Working state, which
+// is the only thing the spinner animation exists to draw.
+func (m model) anyWorking() bool {
+	for _, r := range m.results {
+		if r.State == detect.Working {
+			return true
+		}
+	}
+	return false
+}
+
+// syncSpinner arms or disarms the spinner tick to match the results. Arming
+// returns the tick command to run; disarming returns nil and simply stops
+// re-arming, so the animation costs nothing once the last agent stops working.
+func (m *model) syncSpinner() tea.Cmd {
+	want := m.anyWorking()
+	if want == m.spinning {
+		return nil
+	}
+	m.spinning = want
+	if want {
+		return m.spin.Tick
+	}
+	return nil
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -166,6 +203,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.results = msg.Results
 		m.lastPush = time.Now()
 		m.syncMarker()
+		if cmd := m.syncSpinner(); cmd != nil {
+			return m, cmd
+		}
+		return m, nil
 	case tickMsg:
 		// The daemon is the authority, and it knows things the screen alone does
 		// not: it holds a working period across a detection gap (unknownGrace in
@@ -191,11 +232,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.syncMarker()
-		return m, tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+		cmds := []tea.Cmd{tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })}
+		// The fallback can discover a working agent while the daemon is away, so
+		// it also has to (re)arm the spinner.
+		if cmd := m.syncSpinner(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
 	case spinner.TickMsg:
-		// Advance only the spinner animation; never re-run detection here.
+		// Advance only the spinner animation; never re-run detection here. Stop
+		// re-arming as soon as nothing is Working, so an idle sidebar stops
+		// repainting at 12fps.
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
+		if !m.anyWorking() {
+			m.spinning = false
+			return m, nil
+		}
 		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -217,6 +270,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "esc", "ctrl+g":
+			if m.originPane != "" {
+				m.srv.FocusPane(m.pane, m.originPane)
+			}
+			return m, nil
 		case "j", "down", "ctrl+n", "tab", "l", "right":
 			m.goTo(m.cursor + 1)
 		case "k", "up", "ctrl+p", "shift+tab", "h", "left":

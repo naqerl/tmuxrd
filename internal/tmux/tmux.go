@@ -378,22 +378,6 @@ func (s Server) SetWindowOption(target, name, value string) {
 	s.Run("set-option", "-w", "-t", target, name, value)
 }
 
-// WindowHasSidebar reports whether a window already holds a tmuxrd sidebar.
-// Used as a last-instant re-check before creating one, since two callers can
-// both decide a window is missing its sidebar.
-func (s Server) WindowHasSidebar(target string) bool {
-	out, err := s.Run("list-panes", "-t", target, "-F", "#{@tmuxrd_sidebar}")
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if strings.TrimSpace(line) == "1" {
-			return true
-		}
-	}
-	return false
-}
-
 // ShowOption reads a global option's value (trimmed).
 func (s Server) ShowOption(name string) string {
 	out, _ := s.Run("show-option", "-gqv", name)
