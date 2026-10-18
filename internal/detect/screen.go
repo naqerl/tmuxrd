@@ -61,6 +61,23 @@ func classify(v View) (agent string, st State, ok bool) {
 	return "", Unknown, false
 }
 
+// ClaimsCommand reports whether cmd names a registered agent. It is the
+// case-insensitive union of the registry's Agent() names — exactly the test
+// every detector applies to View.Command first — so a caller can decide "may
+// this pane be an agent?" from /proc alone, before paying for a capture-pane.
+//
+// It is derived from Detectors rather than kept as a second list, so adding a
+// detector extends the filter automatically and the two can never disagree
+// about which panes are candidates.
+func ClaimsCommand(cmd string) bool {
+	for _, d := range Detectors {
+		if strings.EqualFold(cmd, d.Agent()) {
+			return true
+		}
+	}
+	return false
+}
+
 // tailNonEmpty returns the last n non-empty lines of a screen, with trailing
 // blanks trimmed off each. Most rules only care about what is on screen near
 // the bottom; anything scrolled up is history.

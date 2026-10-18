@@ -43,15 +43,45 @@ type Result struct {
 // Detect classifies every agent pane of the server, in tmux order. A pane no
 // detector claims is not an agent and does not appear at all — that is the
 // difference between "a pane" and "an agent's pane".
+//
+// It is a thin wrapper over DetectPanes for callers that hold no pane list; it
+// fetches the panes itself. Callers that already have one (the daemon refresh)
+// use DetectPanes so the server is listed once per pass, not once per phase.
 func Detect(s tmux.Server) []Result {
 	panes, err := s.ListPanes()
 	if err != nil {
 		return nil
 	}
+	return DetectPanes(s, panes)
+}
+
+// DetectPanes classifies the agent panes of an already-fetched pane list.
+//
+// It captures a pane's screen only when the pane could be an agent: the pane is
+// not a tmuxrd sidebar, and resolveCommand — which reads /proc, never tmux —
+// names a command the detector registry claims. capture-pane is the expensive
+// step (one tmux process per pane), so skipping it for shells, sleeps, htop and
+// the sidebars themselves turns the cost of a pass from "every pane on the
+// server" into "every agent pane".
+func DetectPanes(s tmux.Server, panes []tmux.Pane) []Result {
 	var out []Result
 	for _, p := range panes {
+		// tmuxrd's own sidebar panes are never agents. Skipping them here (as
+		// well as before the capture below) means the pass never even considers
+		// them, which is what the @tmuxrd_sidebar tag is for.
+		if p.Sidebar {
+			continue
+		}
 		fc := foregroundCommand(p.PID)
-		v := View{Command: resolveCommand(p.Cmd, fc), Screen: s.Capture(p.ID)}
+		cmd := resolveCommand(p.Cmd, fc)
+		// The command filter is the whole point: a pane no detector could claim
+		// is skipped before its screen is captured. ClaimsCommand is derived
+		// from the same registry classify uses, so this can never disagree with
+		// which panes are agents.
+		if !ClaimsCommand(cmd) {
+			continue
+		}
+		v := View{Command: cmd, Screen: s.Capture(p.ID)}
 		agent, st, ok := classify(v)
 		if !ok {
 			continue
