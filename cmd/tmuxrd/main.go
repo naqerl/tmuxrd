@@ -37,6 +37,8 @@ type model struct {
 	// pane is this sidebar's own pane ($TMUX_PANE), the context for resolving
 	// which tmux client a key event belongs to.
 	pane string
+	// originPane is the pane the user was on before entering tmuxrd; Esc/C-g restores to it.
+	originPane string
 	// lastPush is when the daemon last sent a state snapshot. It gates the
 	// local re-detect: the daemon is the authority, so the 5s tick only
 	// re-detects when the stream has gone quiet.
@@ -54,7 +56,7 @@ func newModel(srv tmux.Server) model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	// This pane is the sidebar: a key event that arrives here belongs to the
 	// client attached to this pane's session (see Server.drivingClient).
-	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE")}
+	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE"), originPane: srv.CurrentPane()}
 }
 
 // layoutOverride reads $TMUXRD_LAYOUT ("strip" or "side"), or "" to let the
@@ -264,6 +266,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "esc", "ctrl+g":
+			if m.originPane != "" {
+				m.srv.FocusPane(m.pane, m.originPane)
+			}
+			return m, nil
 		case "j", "down", "ctrl+n", "tab", "l", "right":
 			m.goTo(m.cursor + 1)
 		case "k", "up", "ctrl+p", "shift+tab", "h", "left":
