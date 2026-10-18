@@ -56,7 +56,11 @@ func newModel(srv tmux.Server) model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	// This pane is the sidebar: a key event that arrives here belongs to the
 	// client attached to this pane's session (see Server.drivingClient).
-	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE"), originPane: srv.CurrentPane()}
+	origin := os.Getenv("TMUXRD_ORIGIN_PANE")
+	if origin == "" {
+		origin = srv.CurrentPane()
+	}
+	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE"), originPane: origin}
 }
 
 // layoutOverride reads $TMUXRD_LAYOUT ("strip" or "side"), or "" to let the

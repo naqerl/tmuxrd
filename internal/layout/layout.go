@@ -15,6 +15,7 @@ package layout
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/naqerl/tmuxrd/internal/tmux"
 )
@@ -158,7 +159,6 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 		}
 	}
 
-	clientCmd := clientCommand()
 
 	for _, key := range order {
 		w := windows[key]
@@ -184,7 +184,7 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 			// so a second caller re-reads a list that already contains the first
 			// caller's sidebar. That is what makes concurrent hook invocations
 			// idempotent without a check-then-act window.
-			createSidebar(srv, w.target, mode, clientCmd, opts)
+			createSidebar(srv, w.target, mode, opts)
 			continue
 		}
 
@@ -215,19 +215,28 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 			continue
 		}
 		srv.KillPane(w.sidebar.ID)
-		createSidebar(srv, w.target, mode, clientCmd, opts)
+		createSidebar(srv, w.target, mode, opts)
 	}
 	return nil
 }
 
 // createSidebar splits a sidebar into target in the given shape and tags both
 // the pane (@tmuxrd_sidebar) and the window (@tmuxrd_layout).
-func createSidebar(srv tmux.Server, target, mode, clientCmd string, opts Options) {
+func createSidebar(srv tmux.Server, target, mode string, opts Options) {
 	axis, size := "h", opts.SideWidth
 	if mode == Strip {
 		axis, size = "v", opts.StripHeight
 	}
-	pid, err := srv.SplitPane(target, axis, size, clientCmd)
+	// Capture the pane that is active in target BEFORE the split, so the
+	// sidebar can restore focus to it on Esc/C-g. Inside the new sidebar
+	// pane, tmux resolves the "current" pane to the sidebar itself.
+	origin, _ := srv.Run("display-message", "-t", target, "-p", "#{pane_id}")
+	origin = strings.TrimSpace(origin)
+	cmd := clientCommand()
+	if origin != "" {
+		cmd = "env TMUXRD_ORIGIN_PANE=" + origin + " " + cmd
+	}
+	pid, err := srv.SplitPane(target, axis, size, cmd)
 	if err != nil || pid == "" {
 		return
 	}
