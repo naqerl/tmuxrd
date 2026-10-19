@@ -65,6 +65,11 @@ type model struct {
 	// no client, and one that attaches later must still be found.
 	clientName  string
 	clientKnown bool
+	// navHold is the agent pane navigate just aimed at, kept until the daemon
+	// reports that pane's window as the one in view. A snapshot listed before
+	// the switch would otherwise put the accent back on the previous row.
+	navHold     string
+	navHoldTill time.Time
 	// lastPush is when the daemon last sent a state snapshot. It gates the
 	// local re-detect: the daemon is the authority, so the 5s tick only
 	// re-detects when the stream has gone quiet.
@@ -119,30 +124,87 @@ func layoutOverride() string {
 	return ""
 }
 
-// syncMarker marks the agent whose window is currently in view, and clears the
-// marker entirely when that window has no agent (a shell window, htop).
+// syncMarker marks the agent whose window is currently in view.
 //
 // Keying off the *window* rather than the pane is what makes every sidebar agree
 // without shared state: focusing an agent's sidebar still shows that agent
-// marked, while a non-agent window shows no marker at all.
+// marked. A window with no agent (a shell, htop) would otherwise clear the
+// marker, and the next snapshot would wipe a highlight that had moved onto the
+// agent that is actually working. That empty marker picks the working agent
+// instead, and stays there.
 func (m *model) syncMarker() {
-	win := ""
-	for _, b := range m.bars {
-		if b.Session == m.session && b.Active {
-			win = b.Window
-			break
-		}
-	}
-	m.cursor = -1
-	if win == "" {
-		return
-	}
-	for i, r := range m.results {
-		if r.Session == m.session && r.Window == win {
+	if i, ok := m.resultIndex(m.navHold); ok && time.Now().Before(m.navHoldTill) {
+		r := m.results[i]
+		if _, win, viewed := m.viewedWindow(); viewed && r.Session == m.session && r.Window == win {
+			m.navHold = ""
+		} else {
 			m.cursor = i
 			return
 		}
+	} else if m.navHold != "" {
+		m.navHold = ""
 	}
+	if _, win, viewed := m.viewedWindow(); viewed {
+		for i, r := range m.results {
+			if r.Session == m.session && r.Window == win {
+				m.cursor = i
+				return
+			}
+		}
+	}
+	if i := m.runningIndex(); i >= 0 {
+		m.cursor = i
+		return
+	}
+	m.cursor = -1
+}
+
+// viewedWindow is this sidebar's session and the window currently in view.
+func (m model) viewedWindow() (sess, win string, ok bool) {
+	for _, b := range m.bars {
+		if b.Session == m.session && b.Active {
+			return b.Session, b.Window, true
+		}
+	}
+	return "", "", false
+}
+
+// cursorMatchesView reports whether the highlighted agent is the one in view.
+func (m model) cursorMatchesView() bool {
+	if m.cursor < 0 || m.cursor >= len(m.results) {
+		return false
+	}
+	_, win, ok := m.viewedWindow()
+	if !ok {
+		return false
+	}
+	r := m.results[m.cursor]
+	return r.Session == m.session && r.Window == win
+}
+
+// runningIndex is the working agent an empty marker should show. Among several,
+// the one that has been working the longest is the run you are waiting on.
+func (m model) runningIndex() int {
+	best, bestWork := -1, time.Duration(-1)
+	for i, r := range m.results {
+		if r.State != detect.Working || r.Worked <= bestWork {
+			continue
+		}
+		best, bestWork = i, r.Worked
+	}
+	return best
+}
+
+func (m model) resultIndex(pane string) (int, bool) {
+	if pane == "" {
+		return 0, false
+	}
+	for i, r := range m.results {
+		if r.PaneID == pane {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // sidebarPane is the sidebar of session:window in the last daemon snapshot.
@@ -167,11 +229,17 @@ func (m *model) navigate(i int, intoAgent bool) tea.Cmd {
 	if i < 0 || i >= len(m.results) {
 		return nil
 	}
-	if !intoAgent && i == m.cursor {
+	// Same row and the view is already there: nothing to do. An empty marker
+	// can already be sitting on the running agent while the view is a shell
+	// window; that press still has to move the view, or the next snapshot
+	// looks like a snap back to nowhere.
+	if !intoAgent && i == m.cursor && m.cursorMatchesView() {
 		return nil
 	}
 	m.cursor = i
 	r := m.results[i]
+	m.navHold = r.PaneID
+	m.navHoldTill = time.Now().Add(800 * time.Millisecond)
 	client, known := m.clientName, m.clientKnown
 	pane := m.pane
 	srv := m.srv
@@ -211,6 +279,17 @@ func (m *model) step(delta int) tea.Cmd {
 	if len(m.results) == 0 {
 		m.cursor = -1
 		return nil
+	}
+	// The highlight is on the running agent but the view is not. The first
+	// step takes you there; the one after that walks the list.
+	if len(m.bars) > 0 && m.cursor >= 0 && !m.cursorMatchesView() {
+		return m.navigate(m.cursor, false)
+	}
+	if m.cursor < 0 {
+		if delta < 0 {
+			return m.navigate(len(m.results)-1, false)
+		}
+		return m.navigate(0, false)
 	}
 	next := m.cursor + delta
 	if next < 0 || next >= len(m.results) {

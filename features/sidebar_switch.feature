@@ -71,9 +71,25 @@ Feature: Sidebar reflects window focus quickly and stays consistent
     And I wait 1200ms
     Then window "0" of session "s1" should be named "pi"
 
-  Scenario: A non-agent window shows no marker
-    # The marker must say "the agent you are looking at"; a shell window has no
-    # agent in view, so nothing is marked.
+  Scenario: An empty marker picks the running agent and stays there
+    # A shell window has no agent of its own. Clearing the marker made the
+    # next key start at the wrong row, and the following snapshot wiped it.
+    # The empty marker picks the agent that is working, and j moves the view
+    # there instead of snapping back to nothing.
+    Given agent "claude" in session "s1" window "1" is in state "working"
+    And the sidebar should show a timer for agent "claude"
+    And session "s1" has an extra non-agent window
+    When I select window "3"
+    Then the sidebar should select window "1" within 500ms
+    When I wait 1200ms
+    Then the sidebar should select window "1" within 250ms
+    When I press the "j" key in the sidebar
+    Then window "1" should be the active window of session "s1"
+    And window "1" of session "s1" should have its sidebar pane focused
+
+  Scenario: A non-agent window shows no marker when nothing is working
+    # With no working agent there is nothing to fall back to, so a shell
+    # window shows no marker.
     Given the sidebar is showing agent rows
     And session "s1" has an extra non-agent window
     When I select window "3"
