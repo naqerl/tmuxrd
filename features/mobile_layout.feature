@@ -120,6 +120,47 @@ Feature: The sidebar adapts its shape to the window width
     And window "1" should be the active window of session "s1"
     And window "1" of session "s1" should have its sidebar pane focused
 
+  Scenario: Widening a focused strip keeps the keyboard on the sidebar
+    # A desktop client landing on a phone-width window grows it past
+    # @tmuxrd_mobile_width. The strip has to become a side pane, and the
+    # keyboard was on that strip, so the replacement must keep it.
+    Given an isolated tmux server "tmuxrd-godog-ml10"
+    And session "s1" is created with agent windows:
+      | agent |
+      | pi    |
+    When I resize window "0" in session "s1" to 40x24
+    And I toggle the sidebar on
+    And I focus the sidebar pane
+    And I resize window "0" in session "s1" to 220x50
+    And I adapt the sidebar layout
+    Then window "0" of session "s1" should have a side sidebar
+    And window "0" of session "s1" should have its sidebar pane focused
+
+  Scenario: Narrowing a focused sidebar keeps the keyboard on the sidebar
+    Given an isolated tmux server "tmuxrd-godog-ml11"
+    And session "s1" is created with agent windows:
+      | agent |
+      | pi    |
+    When I resize window "0" in session "s1" to 120x30
+    And I toggle the sidebar on
+    And I focus the sidebar pane
+    And I resize window "0" in session "s1" to 40x24
+    And I adapt the sidebar layout
+    Then window "0" of session "s1" should have a strip sidebar
+    And window "0" of session "s1" should have its sidebar pane focused
+
+  Scenario: Reshaping leaves the keyboard in the agent when the agent was focused
+    Given an isolated tmux server "tmuxrd-godog-ml12"
+    And session "s1" is created with agent windows:
+      | agent |
+      | pi    |
+    When I resize window "0" in session "s1" to 120x30
+    And I toggle the sidebar on
+    And I resize window "0" in session "s1" to 40x24
+    And I adapt the sidebar layout
+    Then window "0" of session "s1" should have a strip sidebar
+    And window "0" should have its agent pane focused
+
   Scenario: A widened side sidebar is put back to the configured width
     # tmux splits extra columns evenly, so growing a window widens a sidebar
     # that was split at 32. The daemon's layout pass puts the width back.

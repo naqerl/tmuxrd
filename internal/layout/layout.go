@@ -229,11 +229,81 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 			}
 			continue
 		}
-		srv.KillPane(w.sidebar.ID)
-		createSidebar(srv, w.target, mode, opts)
-		replaced = true
+		// A shape change cannot resize in place: a left column and a top strip
+		// are different split axes. Kill and re-split as one command. Two
+		// invocations repaint the agent in between, and split-window -d would
+		// leave the keyboard there after kill-pane moved it off the sidebar.
+		if replaceSidebar(srv, w.sidebar.ID, w.target, siblingPane(panes, w.sidebar), mode, opts) {
+			replaced = true
+		}
 	}
 	return replaced, nil
+}
+
+// siblingPane is the pane Esc/Ctrl-g should return to after a reshape. The
+// new sidebar is a fresh process, so it cannot inherit the old one's origin,
+// and the sidebar pane itself is about to be destroyed.
+func siblingPane(panes []tmux.Pane, sidebar *tmux.Pane) string {
+	if sidebar == nil {
+		return ""
+	}
+	for i := range panes {
+		p := &panes[i]
+		if p.Session == sidebar.Session && p.Window == sidebar.Window && p.ID != sidebar.ID && !p.Sidebar {
+			return p.ID
+		}
+	}
+	return ""
+}
+
+// replaceSidebar kills oldID and splits a sidebar of the requested shape into
+// target as one tmux command. The keyboard follows the sidebar when that pane
+// was active: the split then omits -d, so the new pane takes focus and any
+// client that was in the old pane follows it. Otherwise -d leaves the keyboard
+// on the agent, which is where kill-pane put it.
+//
+// #{pane_active} is read on the pane itself. Pane.Active is window_active, so
+// it is true for every pane of the session's current window.
+func replaceSidebar(srv tmux.Server, oldID, target, origin, mode string, opts Options) bool {
+	dir, size := "-h", opts.SideWidth
+	if mode == Strip {
+		dir, size = "-v", opts.StripHeight
+	}
+	focused := false
+	if out, err := srv.Run("display-message", "-p", "-t", oldID, "#{pane_active}"); err == nil {
+		focused = strings.TrimSpace(out) == "1"
+	}
+	cmd := clientCommand()
+	if origin != "" {
+		cmd = "env TMUXRD_ORIGIN_PANE=" + origin + " " + cmd
+	}
+	// Flags match SplitPane. -d is omitted only when the sidebar held focus.
+	args := []string{"kill-pane", "-t", oldID, ";", "split-window", dir, "-b"}
+	if !focused {
+		args = append(args, "-d")
+	}
+	args = append(args, "-l", strconv.Itoa(size), "-t", target, "-P", "-F", "#{pane_id}", cmd)
+	out, err := srv.Run(args...)
+	pid := paneIDFrom(out)
+	if err != nil || pid == "" {
+		return false
+	}
+	srv.SetPaneOption(pid, "@tmuxrd_sidebar", "1")
+	srv.SetWindowOption(target, "@tmuxrd_layout", mode)
+	return true
+}
+
+// paneIDFrom returns the last %id in a tmux command-list's stdout. kill-pane
+// prints nothing; split-window -P prints the new pane.
+func paneIDFrom(out string) string {
+	id := ""
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "%") {
+			id = line
+		}
+	}
+	return id
 }
 
 // createSidebar splits a sidebar into target in the given shape and tags both
