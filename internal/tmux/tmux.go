@@ -150,16 +150,26 @@ type Pane struct {
 	// daemon restart and dies with the pane — a replacement agent starts fresh.
 	Pinned bool
 
-	// Viewed is true when this pane is in the window a client is looking at:
-	// the window is its session's current window AND that session has at least
-	// one attached client. A detached session's current window is not viewed by
-	// anyone, so this cannot accidentally consume a marker. The daemon clears
-	// Finished on a viewed pane, which is what makes ✓ a notification pin
-	// rather than a permanent badge.
-	Viewed bool
+	// Active is window_active: this pane's window is its session's current
+	// window, attached or not. Attached is session_attached > 0. Viewed is
+	// both, and is what consumes the finished pin — a detached session's
+	// current window is not viewed by anyone. The daemon clears Finished on a
+	// viewed pane, which is what makes ✓ a notification pin rather than a
+	// permanent badge.
+	Active   bool
+	Attached bool
+	Viewed   bool
+
+	// ContentFP is a cheap fingerprint of the visible screen, taken from the
+	// same list-panes row: cursor, history, scroll position, alternate-screen
+	// flag and pane title. next-3.9 and 3.5 have no #{pane_activity}, so this
+	// is what a refresh can compare to skip capture-pane. A TUI can still
+	// redraw in place without moving any of these; callers must not treat a
+	// match as proof the screen is unchanged forever.
+	ContentFP string
 }
 
-const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}\t#{@tmuxrd_finished}\t#{window_active}\t#{session_attached}"
+const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}\t#{@tmuxrd_finished}\t#{window_active}\t#{session_attached}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{history_bytes}\t#{scroll_position}\t#{alternate_on}\t#{pane_title}"
 
 // ListPanes enumerates every pane on every window of every session.
 func (s Server) ListPanes() ([]Pane, error) {
@@ -173,9 +183,17 @@ func (s Server) ListPanes() ([]Pane, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		if len(fields) < 17 {
+		// 0..22 are fixed columns; pane_title is the rest so a title that
+		// itself contains a tab does not shift the columns in front of it.
+		if len(fields) < 23 {
 			continue
 		}
+		title := ""
+		if len(fields) > 23 {
+			title = strings.Join(fields[23:], "\t")
+		}
+		active := strings.TrimSpace(fields[15]) == "1"
+		attached := atoi(fields[16]) > 0
 		panes = append(panes, Pane{
 			Session: fields[0], Window: fields[1], WindowName: fields[2],
 			ID: fields[3], PID: fields[4], Cmd: fields[5], Path: fields[6],
@@ -187,7 +205,12 @@ func (s Server) ListPanes() ([]Pane, error) {
 			Sidebar:      strings.TrimSpace(fields[12]) == "1",
 			Layout:       strings.TrimSpace(fields[13]),
 			Pinned:       strings.TrimSpace(fields[14]) == "1",
-			Viewed:       strings.TrimSpace(fields[15]) == "1" && atoi(fields[16]) > 0,
+			Active:       active,
+			Attached:     attached,
+			Viewed:       active && attached,
+			ContentFP: strings.Join([]string{
+				fields[17], fields[18], fields[19], fields[20], fields[21], fields[22], title,
+			}, "\x1e"),
 		})
 	}
 	return panes, nil
@@ -242,11 +265,18 @@ func (s Server) sidebarPaneInWindow(paneID string) string {
 // select-window moves the view when no client is attached). fromPane is the
 // sidebar that received the gesture ("" when the caller has no pane context).
 func (s Server) GoToAgent(fromPane, paneID string) {
+	_ = s.GoToAgentClient(paneID, s.DrivingClient(fromPane))
+}
+
+// GoToAgentClient is GoToAgent with the driving client already resolved.
+// Passing it in keeps a keypress from paying display-message + list-clients
+// on every repeat. An empty client omits switch-client (a detached server).
+func (s Server) GoToAgentClient(paneID, client string) error {
 	target := paneID
 	if sb := s.sidebarPaneInWindow(paneID); sb != "" {
 		target = sb
 	}
-	s.moveClient(fromPane, paneID, target)
+	return s.MoveClient(client, paneID, target)
 }
 
 // SelectPane focuses a pane: switch the client to its session, select its
@@ -258,24 +288,16 @@ func (s Server) GoToAgent(fromPane, paneID string) {
 // at — so without select-window, focusing an agent in another window appears to
 // do nothing.
 func (s Server) SelectPane(fromPane, paneID string) {
-	s.moveClient(fromPane, paneID, paneID)
+	_ = s.MoveClient(s.DrivingClient(fromPane), paneID, paneID)
 }
 
 // FocusPane is SelectPane under the name the client uses.
 func (s Server) FocusPane(fromPane, paneID string) { s.SelectPane(fromPane, paneID) }
 
-// HoldPane makes paneID the active pane of its window without moving the view.
-// It is what a key press inside a sidebar pane needs: the user is obviously
-// already looking at that pane's window, so select-window here would only be a
-// way to *drag* the view to whichever sidebar received the key — including a
-// window the user did not choose. select-pane alone cannot do that, and it is
-// a no-op (not a flicker) when the pane is already active.
-func (s Server) HoldPane(fromPane, paneID string) { s.Run("select-pane", "-t", paneID) }
-
-// moveClient moves the client that sent the gesture to view's session and
-// window, and leaves the keyboard on focus. It is ONE tmux invocation: run as
-// separate invocations, the client repainted once when the view landed and again
-// when the keyboard moved, which reads as a flicker through intermediate frames.
+// MoveClient moves client to view's session and window and leaves the keyboard
+// on focus. It is ONE tmux invocation: run as separate invocations, the client
+// repainted once when the view landed and again when the keyboard moved, which
+// reads as a flicker through intermediate frames.
 //
 // The order is load-bearing. tmux stops processing a ';'-separated list at the
 // first command that fails, so the two commands that always work — moving the
@@ -283,16 +305,23 @@ func (s Server) HoldPane(fromPane, paneID string) { s.Run("select-pane", "-t", p
 // fails on a server with no client attached (a detached test server, an ssh
 // driven server) and can race a client that just detached, comes last. With the
 // switch first, a client-less server moved nothing at all: the view stayed put
-// and only the error was left behind.
-func (s Server) moveClient(fromPane, view, focus string) {
+// and only the error was left behind. An empty client skips switch-client.
+// The error is returned so the caller can drop a cached client name when the
+// switch fails; select-window and select-pane have already run by then.
+//
+// switch-client -t selects the pane it names, and it runs last, so the target
+// is focus rather than view. Targeting the agent pane here puts the keyboard
+// in the agent after select-pane had just parked it on the sidebar.
+func (s Server) MoveClient(client, view, focus string) error {
 	args := []string{"select-window", "-t", view, ";", "select-pane", "-t", focus}
-	if c := s.drivingClient(fromPane); c != "" {
-		args = append(args, ";", "switch-client", "-c", c, "-t", view)
+	if client != "" {
+		args = append(args, ";", "switch-client", "-c", client, "-t", focus)
 	}
-	s.Run(args...)
+	_, err := s.Run(args...)
+	return err
 }
 
-// drivingClient names the client a gesture belongs to. A command run from a pane
+// DrivingClient names the client a gesture belongs to. A command run from a pane
 // process carries no client context, so switch-client with no -c moves an
 // arbitrary client — in practice the last one tmux iterates — and on a server
 // with two attached terminals a keystroke in one moved the other. The gesture's
@@ -301,7 +330,7 @@ func (s Server) moveClient(fromPane, view, focus string) {
 // client's name is its tty, or client-<pid> for a control client); a pid is not
 // a client target. "" (nothing attached, a detached server, no pane context)
 // leaves the choice to tmux.
-func (s Server) drivingClient(fromPane string) string {
+func (s Server) DrivingClient(fromPane string) string {
 	if fromPane == "" {
 		return ""
 	}

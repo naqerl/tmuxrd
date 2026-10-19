@@ -34,23 +34,25 @@ Feature: Sidebar reflects window focus quickly and stays consistent
     When I focus the sidebar pane
     Then the sidebar should still show a selection marker
 
-  Scenario: j only moves the selection marker, the view stays
-    # j/k preview: the view and the keyboard stay on the sidebar; the marker
-    # moves. Enter commits, Esc/C-g returns to the origin pane.
+  Scenario: j switches to the next agent and keeps the sidebar focused
+    # j/k move the view and leave the keyboard on that window's sidebar, so the
+    # next press still lands in tmuxrd. Enter puts the keyboard in the agent.
     Given the sidebar is showing agent rows
     When I select window "0"
     Then the sidebar should select window "0" within 250ms
     When I press the "j" key in the sidebar
     Then the sidebar should select window "1" within 250ms
-    And window "0" should be the active window of session "s1"
+    And window "1" should be the active window of session "s1"
+    And window "1" of session "s1" should have its sidebar pane focused
 
-  Scenario: k only moves the selection marker back, the view stays
+  Scenario: k switches back to the previous agent and keeps the sidebar focused
     Given the sidebar is showing agent rows
     When I select window "2"
     Then the sidebar should select window "2" within 250ms
     When I press the "k" key in the sidebar
     Then the sidebar should select window "1" within 250ms
-    And window "2" should be the active window of session "s1"
+    And window "1" should be the active window of session "s1"
+    And window "1" of session "s1" should have its sidebar pane focused
 
   Scenario: Enter focuses the pointed agent's pane
     Given the sidebar is showing agent rows

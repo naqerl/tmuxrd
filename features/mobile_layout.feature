@@ -117,5 +117,21 @@ Feature: The sidebar adapts its shape to the window width
     Then the sidebar should select window "0" within 250ms
     When I press the "j" key in the sidebar
     Then the sidebar should select window "1" within 250ms
-    And window "0" should be the active window of session "s1"
-    And window "0" of session "s1" should have its sidebar pane focused
+    And window "1" should be the active window of session "s1"
+    And window "1" of session "s1" should have its sidebar pane focused
+
+  Scenario: A widened side sidebar is put back to the configured width
+    # tmux splits extra columns evenly, so growing a window widens a sidebar
+    # that was split at 32. The daemon's layout pass puts the width back.
+    Given an isolated tmux server "tmuxrd-godog-ml9"
+    And session "s1" is created with agent windows:
+      | agent |
+      | pi    |
+    When I resize window "0" in session "s1" to 100x30
+    And I toggle the sidebar on
+    Then window "0" of session "s1" should have a side sidebar
+    And the sidebar of window "0" in session "s1" should be 32 columns wide
+    When I resize window "0" in session "s1" to 220x50
+    And I wait 1500ms
+    Then window "0" of session "s1" should have a side sidebar
+    And the sidebar of window "0" in session "s1" should be 32 columns wide

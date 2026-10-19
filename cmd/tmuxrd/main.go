@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -16,6 +17,18 @@ import (
 )
 
 type tickMsg time.Time
+
+// navMu serialises sidebar navigation. Bubble Tea runs commands in parallel, so
+// two keypresses would otherwise interleave two tmux command lists.
+var navMu sync.Mutex
+
+// navMsg is the result of a navigation command. A failed switch-client drops
+// the cached client name; select-window and select-pane have already run.
+type navMsg struct {
+	err    error
+	client string
+	known  bool
+}
 
 // stateInterval is how often the sidebar re-detects agent state; the working
 // spinner animates independently at spinner.MiniDot.FPS between refreshes.
@@ -37,22 +50,29 @@ type model struct {
 	// pane is this sidebar's own pane ($TMUX_PANE), the context for resolving
 	// which tmux client a key event belongs to.
 	pane string
+	// session is this sidebar's session, read once at startup. The marker
+	// follows that session's active window from the daemon snapshot.
+	session string
+	// bars is the daemon's last list of sidebar panes: the marker, the j/k
+	// focus target, and whether this pane is the one on screen.
+	// seenGen drops a sidebar snapshot that was listed before a newer one.
+	bars    []SidebarInfo
+	seenGen int
 	// originPane is the pane the user was on before entering tmuxrd; Esc/C-g restores to it.
 	originPane string
-	// chosen is set once the user has picked a row by hand (j/k, a tap, 1-9).
-	// While it is set, daemon pushes must not re-sync the cursor to the window
-	// in view — the selection is the user's, the view has not moved (j/k only
-	// preview). Esc/C-g resets both the focus and the flag.
-	chosen bool
+	// clientName is the tmux client this pane drives, cached after the first
+	// successful lookup. An empty name is never cached: a detached server has
+	// no client, and one that attaches later must still be found.
+	clientName  string
+	clientKnown bool
 	// lastPush is when the daemon last sent a state snapshot. It gates the
 	// local re-detect: the daemon is the authority, so the 5s tick only
 	// re-detects when the stream has gone quiet.
 	lastPush time.Time
 	spin     spinner.Model
 	// spinning is whether the spinner tick is currently armed. The 12fps
-	// animation is only worth a repaint while some agent is Working; an idle
-	// sidebar must not re-render 12 times a second for nothing. It mirrors the
-	// tick's own lifetime, not "is anything working right now".
+	// animation runs only while an agent is Working and this sidebar is the
+	// one on screen (or no session is attached, as in the detached suite).
 	spinning bool
 }
 
@@ -65,7 +85,26 @@ func newModel(srv tmux.Server) model {
 	if origin == "" {
 		origin = srv.CurrentPane()
 	}
-	return model{srv: srv, spin: s, force: layoutOverride(), pane: os.Getenv("TMUX_PANE"), originPane: origin}
+	pane := os.Getenv("TMUX_PANE")
+	return model{
+		srv: srv, spin: s, force: layoutOverride(),
+		pane: pane, originPane: origin, session: paneSession(srv, pane),
+	}
+}
+
+// paneSession reads this pane's session once. Later marker updates come from
+// the daemon snapshot, so a state push does not call display-message.
+func paneSession(srv tmux.Server, pane string) string {
+	if pane != "" {
+		out, err := srv.Run("display-message", "-p", "-t", pane, "#{session_name}")
+		if err == nil {
+			if s := strings.TrimSpace(out); s != "" {
+				return s
+			}
+		}
+	}
+	_, sess, _ := srv.CurrentTarget()
+	return sess
 }
 
 // layoutOverride reads $TMUXRD_LAYOUT ("strip" or "side"), or "" to let the
@@ -87,74 +126,166 @@ func layoutOverride() string {
 // without shared state: focusing an agent's sidebar still shows that agent
 // marked, while a non-agent window shows no marker at all.
 func (m *model) syncMarker() {
-	if m.chosen {
-		return // the selection belongs to the user; the view has not moved
+	win := ""
+	for _, b := range m.bars {
+		if b.Session == m.session && b.Active {
+			win = b.Window
+			break
+		}
 	}
-	_, sess, win := m.srv.CurrentTarget()
 	m.cursor = -1
-	if sess == "" {
+	if win == "" {
 		return
 	}
 	for i, r := range m.results {
-		if r.Session == sess && r.Window == win {
+		if r.Session == m.session && r.Window == win {
 			m.cursor = i
 			return
 		}
 	}
 }
 
+// sidebarPane is the sidebar of session:window in the last daemon snapshot.
+func (m model) sidebarPane(sess, win string) string {
+	for _, b := range m.bars {
+		if b.Session == sess && b.Window == win {
+			return b.Pane
+		}
+	}
+	return ""
+}
+
+// navigate moves the view to results[i]. intoAgent puts the keyboard in the
+// agent pane (Enter, 1-9, a click). Otherwise the keyboard stays on that
+// window's sidebar (j/k, Tab, arrows, the wheel). The tmux chain runs in the
+// returned command so Update returns before tmux does.
+//
+// The client name is captured here and resolved inside the command, then
+// reported back on navMsg. The command does not read the model: Update may
+// run again while it is in flight.
+func (m *model) navigate(i int, intoAgent bool) tea.Cmd {
+	if i < 0 || i >= len(m.results) {
+		return nil
+	}
+	if !intoAgent && i == m.cursor {
+		return nil
+	}
+	m.cursor = i
+	r := m.results[i]
+	client, known := m.clientName, m.clientKnown
+	pane := m.pane
+	srv := m.srv
+	agent := r.PaneID
+	focus := agent
+	lookup := false
+	if !intoAgent {
+		if sb := m.sidebarPane(r.Session, r.Window); sb != "" {
+			focus = sb
+		} else {
+			lookup = true
+		}
+	}
+	return func() tea.Msg {
+		navMu.Lock()
+		defer navMu.Unlock()
+		c := client
+		if !known {
+			c = srv.DrivingClient(pane)
+		}
+		var err error
+		if lookup {
+			err = srv.GoToAgentClient(agent, c)
+		} else {
+			err = srv.MoveClient(c, agent, focus)
+		}
+		if err != nil || c == "" {
+			return navMsg{err: err}
+		}
+		return navMsg{client: c, known: true}
+	}
+}
+
+// step moves the selection by delta rows and switches the view, leaving the
+// keyboard on the destination window's sidebar.
+func (m *model) step(delta int) tea.Cmd {
+	if len(m.results) == 0 {
+		m.cursor = -1
+		return nil
+	}
+	next := m.cursor + delta
+	if next < 0 || next >= len(m.results) {
+		return nil
+	}
+	return m.navigate(next, false)
+}
+
 // jumpTo selects row i, switches the view, and puts the keyboard in the agent's
 // pane. That is what a tap or a number key should do: on a touch client the
 // point of selecting is to land in the agent ready to type.
-func (m *model) jumpTo(i int) {
-	if i < 0 || i >= len(m.results) {
-		return
-	}
-	m.chosen = true
-	m.cursor = i
-	m.srv.FocusPane(m.pane, m.results[i].PaneID)
+func (m *model) jumpTo(i int) tea.Cmd {
+	return m.navigate(i, true)
 }
 
 // commit presses Enter on the selected row: switch the view to the agent's
 // window and put the keyboard in its pane.
-func (m *model) commit() {
-	if m.cursor < 0 || m.cursor >= len(m.results) {
-		return
+func (m *model) commit() tea.Cmd {
+	return m.navigate(m.cursor, true)
+}
+
+// restoreOrigin returns the keyboard to the pane that was active when this
+// sidebar was created (Esc / Ctrl-g).
+func (m *model) restoreOrigin() tea.Cmd {
+	if m.originPane == "" {
+		return nil
 	}
-	m.srv.FocusPane(m.pane, m.results[m.cursor].PaneID)
+	client, known := m.clientName, m.clientKnown
+	pane, origin := m.pane, m.originPane
+	srv := m.srv
+	return func() tea.Msg {
+		navMu.Lock()
+		defer navMu.Unlock()
+		c := client
+		if !known {
+			c = srv.DrivingClient(pane)
+		}
+		err := srv.MoveClient(c, origin, origin)
+		if err != nil || c == "" {
+			return navMsg{err: err}
+		}
+		return navMsg{client: c, known: true}
+	}
 }
 
 // handleMouse turns a tap or wheel event into a selection. This is what makes
 // the sidebar usable on a touch client: `1`-`9` still work, but a tap on a row
-// (desktop) or a chip (strip) is the natural gesture on a phone.
-func (m *model) handleMouse(e tea.MouseEvent) {
+// (desktop) or a chip (strip) is the natural gesture on a phone. The wheel
+// steps like j/k. A tap focuses the agent.
+func (m *model) handleMouse(e tea.MouseEvent) tea.Cmd {
 	switch e.Button {
 	case tea.MouseButtonWheelUp:
-		m.chosen = true
-		if m.cursor-1 >= 0 {
-			m.cursor--
-		}
-		return
+		return m.step(-1)
 	case tea.MouseButtonWheelDown:
-		m.chosen = true
-		if m.cursor+1 < len(m.results) {
-			m.cursor++
-		}
-		return
+		return m.step(1)
 	}
 	// A tap arrives as a left press; ignore release, motion and other buttons.
 	if e.Button != tea.MouseButtonLeft || e.Action != tea.MouseActionPress {
-		return
+		return nil
 	}
-	if m.strip {
+	// Before the first window-size message the pane height is 0, so a strip
+	// is not known yet. A tap on the top row is still a chip: the strip's
+	// only clickable row is y=0, and a desktop title row is not a target.
+	if m.strip || (m.height <= 0 && m.force != "side" && e.Y == 0) {
 		if i, ok := m.stripChipAt(e.X); ok {
-			m.jumpTo(i)
+			return m.jumpTo(i)
 		}
-		return
+		if m.strip {
+			return nil
+		}
 	}
 	if i, ok := m.sideRowAt(e.Y); ok {
-		m.jumpTo(i)
+		return m.jumpTo(i)
 	}
+	return nil
 }
 
 // sideRowAt maps a rendered sidebar row to the flat agent index drawn on it,
@@ -185,22 +316,43 @@ func (m model) Init() tea.Cmd {
 	return tea.Tick(stateInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
-// anyWorking reports whether any agent currently shows the Working state, which
-// is the only thing the spinner animation exists to draw.
-func (m model) anyWorking() bool {
+// shouldSpin reports whether this sidebar should animate. A working agent is
+// required. When any session is attached, only the sidebar of the window on
+// screen spins; the others would repaint at 12fps for a pane nobody is looking
+// at. When nothing is attached (the detached test server, a snapshot that has
+// not arrived yet) every sidebar spins, so those scenarios still see the frames.
+func (m model) shouldSpin() bool {
+	working := false
 	for _, r := range m.results {
 		if r.State == detect.Working {
+			working = true
+			break
+		}
+	}
+	if !working {
+		return false
+	}
+	if len(m.bars) == 0 {
+		return true
+	}
+	attached := false
+	for _, b := range m.bars {
+		if !b.Attached {
+			continue
+		}
+		attached = true
+		if b.Active && b.Pane == m.pane {
 			return true
 		}
 	}
-	return false
+	return !attached
 }
 
-// syncSpinner arms or disarms the spinner tick to match the results. Arming
+// syncSpinner arms or disarms the spinner tick to match shouldSpin. Arming
 // returns the tick command to run; disarming returns nil and simply stops
-// re-arming, so the animation costs nothing once the last agent stops working.
+// re-arming, so the animation costs nothing once it is no longer wanted.
 func (m *model) syncSpinner() tea.Cmd {
-	want := m.anyWorking()
+	want := m.shouldSpin()
 	if want == m.spinning {
 		return nil
 	}
@@ -215,6 +367,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case stateUIMsg:
 		m.results = msg.Results
+		// A refresh that listed the panes before a window switch can be
+		// delivered after the switch's own snapshot. Its gen is older, and
+		// applying it would put the accent back on the previous window.
+		if msg.Gen >= m.seenGen {
+			m.bars = msg.Sidebars
+			m.seenGen = msg.Gen
+		}
 		m.lastPush = time.Now()
 		m.syncMarker()
 		if cmd := m.syncSpinner(); cmd != nil {
@@ -259,7 +418,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// repainting at 12fps.
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
-		if !m.anyWorking() {
+		if !m.shouldSpin() {
 			m.spinning = false
 			return m, nil
 		}
@@ -278,47 +437,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.strip = m.height > 0 && m.height <= 2
 		}
 	case tea.MouseMsg:
-		m.handleMouse(tea.MouseEvent(msg))
+		return m, m.handleMouse(tea.MouseEvent(msg))
+	case navMsg:
+		if msg.err != nil {
+			m.clientKnown = false
+			m.clientName = ""
+			return m, nil
+		}
+		if msg.known {
+			m.clientName = msg.client
+			m.clientKnown = true
+		}
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "esc", "ctrl+g":
-			if m.originPane != "" {
-				m.srv.FocusPane(m.pane, m.originPane)
-			}
-			return m, nil
+			return m, m.restoreOrigin()
 		case "j", "down", "ctrl+n", "tab", "l", "right":
-			// j/k move only the selection marker: the view stays put (a
-			// "preview"). Enter commits; Esc/C-g returns to the origin pane.
-			m.chosen = true
-			if m.cursor+1 < len(m.results) {
-				m.cursor++
-			} else if len(m.results) == 0 {
-				m.cursor = -1
-			}
-			if m.cursor >= 0 {
-				m.srv.HoldPane(m.pane, m.pane) // the keyboard is here; keep tmux focus, not the view
-			}
+			// j/k switch the view and leave the keyboard on that window's
+			// sidebar. Enter, 1-9 and a click put it in the agent pane.
+			return m, m.step(1)
 		case "k", "up", "ctrl+p", "shift+tab", "h", "left":
-			m.chosen = true
-			if m.cursor-1 >= 0 {
-				m.cursor--
-			} else if len(m.results) == 0 {
-				m.cursor = -1
-			}
-			if m.cursor >= 0 {
-				m.srv.HoldPane(m.pane, m.pane) // the keyboard is here; keep tmux focus, not the view
-			}
+			return m, m.step(-1)
 		case "enter":
-			m.commit()
+			return m, m.commit()
 		default:
 			// 1-9 jump straight to the Nth agent and switch the view to it, so a
 			// phone (no arrow keys) can drive the sidebar with one tap each.
 			if k := msg.String(); len(k) == 1 && k[0] >= '1' && k[0] <= '9' {
 				if n := int(k[0] - '0'); n <= len(m.results) {
-					m.jumpTo(n - 1)
+					return m, m.jumpTo(n - 1)
 				}
 			}
 		}
@@ -507,16 +657,20 @@ func (m model) renderSideRow(r detect.Result, selected bool, left, path string) 
 		glyph.Render(stateGlyph(r.State, m.spin.View())) +
 		rowStyle.Render(left)
 	if m.width > 0 {
-		// Right-align the path, then fill the rest of the width with the row's
-		// background so the row is a solid block.
+		// Right-align the path when it fits. Appending it when it does not
+		// wraps the row inside the pane, so a 32-column sidebar paints a
+		// second line and the rows below it shift.
 		pw := ansi.StringWidth(path)
-		if w := ansi.StringWidth(out); w+1+pw <= m.width {
-			out += rowStyle.Render(strings.Repeat(" ", m.width-w-pw)) + rowStyle.Render(path)
-		} else {
-			out += rowStyle.Render(" " + path)
+		if path != "" {
+			if w := ansi.StringWidth(out); w+1+pw <= m.width {
+				out += rowStyle.Render(strings.Repeat(" ", m.width-w-pw)) + rowStyle.Render(path)
+			}
 		}
 		if w := ansi.StringWidth(out); w < m.width {
 			out += rowStyle.Render(strings.Repeat(" ", m.width-w))
+		}
+		if ansi.StringWidth(out) > m.width {
+			out = ansi.Truncate(out, m.width, "")
 		}
 	}
 	return out
@@ -527,7 +681,12 @@ func (m model) renderSideRow(r detect.Result, selected bool, left, path string) 
 // on the terminal's own background.
 func padSideBar(lines []string, width, height int) string {
 	for i, l := range lines {
-		if w := ansi.StringWidth(l); w < width {
+		w := ansi.StringWidth(l)
+		if width > 0 && w > width {
+			lines[i] = ansi.Truncate(l, width, "")
+			continue
+		}
+		if w < width {
 			lines[i] = l + barStyle.Render(strings.Repeat(" ", width-w))
 		}
 	}
@@ -637,9 +796,13 @@ func (m model) stripChipLayout() (string, []chipSpan) {
 	}
 
 	// Fit a contiguous run of tabs around the selection. Reserve two columns for
-	// the ‹ › markers that signal clipped tabs.
+	// the ‹ › markers that signal clipped tabs. A width of 0 means the pane
+	// size has not arrived yet: lay every tab out from column 0 so a tap on
+	// the first chip still resolves.
 	budget := m.width
-	if budget > 4 {
+	if budget <= 0 {
+		budget = 1 << 20
+	} else if budget > 4 {
 		budget -= 2
 	}
 	sel := m.cursor

@@ -55,6 +55,70 @@ func Detect(s tmux.Server) []Result {
 	return DetectPanes(s, panes)
 }
 
+// captureFresh is how long a cached classification may stand in for
+// capture-pane when the pane's fingerprint has not moved. A TUI redraws in
+// place without touching cursor or history (and tmux has no pane_activity
+// format), so a match is not proof the screen is the same; the bound keeps a
+// state change visible within a second while an idle pane is not captured on
+// every 500ms tick.
+const captureFresh = time.Second
+
+// screenEntry is one pane's last successful classification.
+type screenEntry struct {
+	fp    string
+	at    time.Time
+	agent string
+	state State
+}
+
+// ScreenCache remembers the last classification per pane so a refresh can skip
+// capture-pane while the fingerprint holds. It is not safe for concurrent use;
+// the daemon calls it from the single refresh goroutine.
+type ScreenCache struct {
+	entries map[string]screenEntry
+}
+
+// NewScreenCache returns an empty cache.
+func NewScreenCache() *ScreenCache {
+	return &ScreenCache{entries: map[string]screenEntry{}}
+}
+
+func (c *ScreenCache) lookup(id, fp string, now time.Time) (screenEntry, bool) {
+	if c == nil {
+		return screenEntry{}, false
+	}
+	e, ok := c.entries[id]
+	if !ok || e.fp != fp || now.Sub(e.at) >= captureFresh {
+		return screenEntry{}, false
+	}
+	return e, true
+}
+
+func (c *ScreenCache) store(id, fp string, now time.Time, agent string, st State, ok bool) {
+	if c == nil || !ok {
+		return
+	}
+	if c.entries == nil {
+		c.entries = map[string]screenEntry{}
+	}
+	c.entries[id] = screenEntry{fp: fp, at: now, agent: agent, state: st}
+}
+
+func (c *ScreenCache) prune(panes []tmux.Pane) {
+	if c == nil || len(c.entries) == 0 {
+		return
+	}
+	live := make(map[string]struct{}, len(panes))
+	for _, p := range panes {
+		live[p.ID] = struct{}{}
+	}
+	for id := range c.entries {
+		if _, ok := live[id]; !ok {
+			delete(c.entries, id)
+		}
+	}
+}
+
 // DetectPanes classifies the agent panes of an already-fetched pane list.
 //
 // It captures a pane's screen only when the pane could be an agent: the pane is
@@ -64,8 +128,25 @@ func Detect(s tmux.Server) []Result {
 // the sidebars themselves turns the cost of a pass from "every pane on the
 // server" into "every agent pane".
 func DetectPanes(s tmux.Server, panes []tmux.Pane) []Result {
+	return DetectPanesCached(s, panes, nil, time.Now(), nil)
+}
+
+// DetectPanesCached is DetectPanes with a fingerprint cache. A nil cache
+// captures every agent pane, which is what summary and the client's fallback
+// want. The daemon passes the cache it keeps across ticks.
+//
+// stop, when non-nil, is checked before each pane. A true result drops the
+// rest of the pass so a newer refresh can re-list instead of finishing a
+// snapshot that a window switch has already made stale.
+func DetectPanesCached(s tmux.Server, panes []tmux.Pane, cache *ScreenCache, now time.Time, stop func() bool) []Result {
+	if cache != nil {
+		defer cache.prune(panes)
+	}
 	var out []Result
 	for _, p := range panes {
+		if stop != nil && stop() {
+			return out
+		}
 		// tmuxrd's own sidebar panes are never agents. Skipping them here (as
 		// well as before the capture below) means the pass never even considers
 		// them, which is what the @tmuxrd_sidebar tag is for.
@@ -81,8 +162,17 @@ func DetectPanes(s tmux.Server, panes []tmux.Pane) []Result {
 		if !ClaimsCommand(cmd) {
 			continue
 		}
-		v := View{Command: cmd, Screen: s.Capture(p.ID)}
-		agent, st, ok := classify(v)
+		var (
+			agent string
+			st    State
+			ok    bool
+		)
+		if e, hit := cache.lookup(p.ID, p.ContentFP, now); hit {
+			agent, st, ok = e.agent, e.state, true
+		} else {
+			agent, st, ok = classify(View{Command: cmd, Screen: s.Capture(p.ID)})
+			cache.store(p.ID, p.ContentFP, now, agent, st, ok)
+		}
 		if !ok {
 			continue
 		}

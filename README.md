@@ -146,10 +146,12 @@ background. The accent background is the selection marker in both shapes — the
 pointer, so a desktop row starts one column further left and uses the width for its content.
 
 The shape is re-checked every time the window resizes and by the daemon (every tick), so attaching
-from a phone flips the sidebar to the strip and attaching from a desktop flips it back. A window
-whose sidebar is already the right shape is left alone — except that the strip is kept at exactly
-`@tmuxrd_strip_height` rows (a window resize squeezes tmux's smallest pane first, which would
-otherwise leave a one-line strip with no detail line).
+from a phone flips the sidebar to the strip and attaching from a desktop flips it back. When the
+shape already matches, the pane stays and its size is restored. The strip is kept at exactly
+`@tmuxrd_strip_height` rows, because a window resize squeezes tmux's smallest pane first and would
+otherwise leave a one-line strip with no detail line. The side pane is kept at `@tmuxrd_side_width`
+columns: tmux gives every pane an equal share of new columns, so a sidebar split at 32 columns
+grows with the window until the next pass resizes it.
 
 | Option | Default | Meaning |
 |---|---|---|

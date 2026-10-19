@@ -9,7 +9,11 @@
 // a 2-row top strip (a phone, where columns are scarce and rows are not).
 //
 // The pass is idempotent: a window whose sidebar already matches its mode is
-// left completely alone, including any manual resize the user made.
+// not rebuilt. Its size is. tmux hands every pane an equal share of new
+// columns when the window grows, so a sidebar split at 32 columns becomes
+// wider than @tmuxrd_side_width and stays there unless something puts it back.
+// The same is true of a strip tmux has squeezed to one row. A drag of the
+// border is undone on the next pass; the configured size is the contract.
 package layout
 
 import (
@@ -42,6 +46,9 @@ type Options struct {
 	MobileWidth int
 	StripHeight int
 	SideWidth   int
+	// TrustEnabled skips the @tmuxrd_enabled read. The daemon checks that
+	// option on its own slow cadence; adapt and the scripts still read it.
+	TrustEnabled bool
 }
 
 func (o Options) withDefaults() Options {
@@ -97,7 +104,8 @@ func Ensure(srv tmux.Server, opts Options, create bool) error {
 	if err != nil {
 		return err
 	}
-	return EnsurePanes(srv, panes, opts, create)
+	_, err = EnsurePanes(srv, panes, opts, create)
+	return err
 }
 
 // EnsurePanes is Ensure over an already-fetched pane list. Callers that also
@@ -110,11 +118,14 @@ func Ensure(srv tmux.Server, opts Options, create bool) error {
 // are killed. That runs on every pass, including the daemon's create=false one,
 // so a server left with duplicates by an older build (or any future race) heals
 // within one tick and the sidebar count cannot grow again.
-func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) error {
+// EnsurePanes reports whether a sidebar pane was created or killed. A pure
+// resize leaves the pane id alone, so callers can skip a second listing.
+func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) (bool, error) {
 	opts = opts.withDefaults()
-	if srv.ShowOption("@tmuxrd_enabled") == "0" {
-		return nil
+	if !opts.TrustEnabled && srv.ShowOption("@tmuxrd_enabled") == "0" {
+		return false, nil
 	}
+	replaced := false
 
 	type window struct {
 		target  string
@@ -155,10 +166,10 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 				// more than one. Reap it now, on every pass, not just when we would
 				// create; that is what bounds an already-poisoned server.
 				srv.KillPane(p.ID)
+				replaced = true
 			}
 		}
 	}
-
 
 	for _, key := range order {
 		w := windows[key]
@@ -185,6 +196,7 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 			// caller's sidebar. That is what makes concurrent hook invocations
 			// idempotent without a check-then-act window.
 			createSidebar(srv, w.target, mode, opts)
+			replaced = true
 			continue
 		}
 
@@ -203,21 +215,25 @@ func EnsurePanes(srv tmux.Server, panes []tmux.Pane, opts Options, create bool) 
 			current = inferMode(*w.sidebar, opts)
 		}
 		if current == mode {
-			// Right shape, but a window resize squeezes the smallest pane first:
-			// tmux will shrink a 2-row strip to 1 row (hiding the detail line)
-			// and will also grow it when the window gets taller. The strip's
-			// two-line UI only works at exactly @tmuxrd_strip_height, so restore
-			// it. A side pane's width is deliberately left alone, so a manual
-			// resize survives.
+			// Right shape. A window resize squeezes the smallest pane first, so
+			// a 2-row strip becomes 1 row, and it also gives every pane an
+			// equal share of any new columns, so a 32-column sidebar grows
+			// with the window. Put both back. Skip a side pane the window
+			// cannot hold: resize-pane would clamp and the next tick would
+			// try again forever.
 			if mode == Strip && w.sidebar.Height != opts.StripHeight {
 				srv.ResizePane(w.sidebar.ID, "v", opts.StripHeight)
+			}
+			if mode == Side && w.sidebar.Width != opts.SideWidth && w.width > opts.SideWidth+1 {
+				srv.ResizePane(w.sidebar.ID, "h", opts.SideWidth)
 			}
 			continue
 		}
 		srv.KillPane(w.sidebar.ID)
 		createSidebar(srv, w.target, mode, opts)
+		replaced = true
 	}
-	return nil
+	return replaced, nil
 }
 
 // createSidebar splits a sidebar into target in the given shape and tags both

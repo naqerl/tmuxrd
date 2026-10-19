@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,11 +22,58 @@ import (
 type daemonMsg struct {
 	Cmd  string `json:"cmd"`
 	Pane string `json:"pane,omitempty"`
+	// What is "layout" when the sender only wants the reshape pass
+	// (window-layout-changed). Anything else is a full refresh.
+	What string `json:"what,omitempty"`
+	// Target is "session:window" for a window notify. The hook expands it, so
+	// the daemon can move the accent without listing panes.
+	Target string `json:"target,omitempty"`
+}
+
+// SidebarInfo is one tmuxrd pane, as the daemon last saw it. The client uses
+// it to highlight its own session's active window, to focus that window's
+// sidebar on j/k, and to decide whether it is the sidebar on screen.
+type SidebarInfo struct {
+	Session  string `json:"session"`
+	Window   string `json:"window"`
+	Pane     string `json:"pane"`
+	Active   bool   `json:"active"`
+	Attached bool   `json:"attached"`
 }
 
 type stateMsg struct {
-	Type    string          `json:"type"`
-	Results []detect.Result `json:"results"`
+	Type     string          `json:"type"`
+	Results  []detect.Result `json:"results"`
+	Sidebars []SidebarInfo   `json:"sidebars"`
+	// Gen orders sidebar snapshots. A refresh that listed earlier carries an
+	// older gen, and the client keeps the newer active window.
+	Gen int `json:"gen"`
+}
+
+func barsEqual(a, b []SidebarInfo) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sidebarInfos(panes []tmux.Pane) []SidebarInfo {
+	out := []SidebarInfo{}
+	for _, p := range panes {
+		if !p.Sidebar {
+			continue
+		}
+		out = append(out, SidebarInfo{
+			Session: p.Session, Window: p.Window, Pane: p.ID,
+			Active: p.Active, Attached: p.Attached,
+		})
+	}
+	return out
 }
 
 // workTime times one pane's current working period: since is when the period
@@ -136,17 +184,45 @@ func cmdDaemon() {
 		refreshMu sync.Mutex
 		clients   = map[net.Conn]struct{}{}
 		state     []detect.Result
+		bars      []SidebarInfo
 		workTimes = map[string]*workTime{}
+		// barGen bumps every time a notify publishes the active window on its
+		// own, ahead of the refresh worker. A refresh that listed earlier must
+		// not write those sidebars back.
+		barGen int
 	)
-	// Layout tunables are read once: they are tmux user options that change
-	// rarely, and the reshape pass runs on every refresh.
-	layoutOpts := layout.OptionsFromServer(srv)
+	screens := detect.NewScreenCache()
+	// Tunables and @tmuxrd_enabled change rarely. Reading them on every 500ms
+	// tick was several tmux processes per refresh; re-read every few seconds.
+	// TrustEnabled tells the layout pass not to read the option again.
+	var (
+		layoutOpts layout.Options
+		enabled    = true
+		optsAt     time.Time
+	)
+	reloadOpts := func() {
+		if !optsAt.IsZero() && time.Since(optsAt) < 5*time.Second {
+			return
+		}
+		layoutOpts = layout.OptionsFromServer(srv)
+		layoutOpts.TrustEnabled = true
+		enabled = srv.ShowOption("@tmuxrd_enabled") != "0"
+		optsAt = time.Now()
+	}
 	// applyWorkTime times the current working period for each pane. Starting to
 	// work (re)sets it, so an agent that goes idle and then works again starts
 	// from zero rather than resuming; stopping freezes the value it reached. A
 	// reading of Unknown holds the period open instead of closing it (see
 	// unknownGrace).
-	applyWorkTime := func(res []detect.Result, now time.Time) {
+	type pinWrite struct {
+		id    string
+		unset bool
+	}
+	// applyWorkTime does not touch tmux. The caller writes the returned pin
+	// options after dropping mu, so a list-panes is never waiting on a lock
+	// that is itself waiting on tmux.
+	applyWorkTime := func(res []detect.Result, now time.Time) []pinWrite {
+		var writes []pinWrite
 		seen := make(map[string]bool, len(res))
 		for i := range res {
 			r := &res[i]
@@ -163,7 +239,7 @@ func cmdDaemon() {
 			// already promoted an idle pinned pane to Finished, so the state is
 			// put back to Idle here rather than recomputed.
 			if r.Pinned && r.Viewed {
-				srv.UnsetPaneOption(r.PaneID, paneFinishedOption)
+				writes = append(writes, pinWrite{id: r.PaneID, unset: true})
 				r.Pinned = false
 				if r.State == detect.Finished {
 					r.State = detect.Idle
@@ -176,7 +252,7 @@ func cmdDaemon() {
 				// so this write happens once per pane. A viewed pane is skipped:
 				// the user is seeing this run, so it is not a notification.
 				if !r.Pinned && !r.Viewed {
-					srv.SetPaneOption(r.PaneID, paneFinishedOption, "1")
+					writes = append(writes, pinWrite{id: r.PaneID})
 					r.Pinned = true
 				}
 				if wt.since.IsZero() {
@@ -218,61 +294,296 @@ func cmdDaemon() {
 				delete(workTimes, id)
 			}
 		}
+		return writes
 	}
-	refresh := func() {
-		// One refresh at a time: a notify (a goroutine) and the ticker can both
-		// fire, and the layout pass creates panes — two concurrent passes could
-		// each decide a window is missing its sidebar and split twice.
+	applyPins := func(writes []pinWrite) {
+		for _, w := range writes {
+			if w.unset {
+				srv.UnsetPaneOption(w.id, paneFinishedOption)
+				continue
+			}
+			srv.SetPaneOption(w.id, paneFinishedOption, "1")
+		}
+	}
+	// sendMu keeps snapshot writes ordered. publishBars and refresh write the
+	// same connections from different goroutines; a torn write is a dropped
+	// line, and the dropped line is the one that moved the accent.
+	var sendMu sync.Mutex
+	sendState := func(conns []net.Conn, res []detect.Result, sb []SidebarInfo, gen int) {
+		if sb == nil {
+			sb = []SidebarInfo{}
+		}
+		b, _ := json.Marshal(stateMsg{Type: "state", Results: res, Sidebars: sb, Gen: gen})
+		b = append(b, '\n')
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		for _, c := range conns {
+			if _, err := c.Write(b); err != nil {
+				mu.Lock()
+				delete(clients, c)
+				mu.Unlock()
+				// Leave the conn open. Notify clients write one command and
+				// exit without reading; closing here drops that unread
+				// command, so a window switch never moves the accent.
+			}
+		}
+	}
+	// connsLocked copies the client set. The caller holds mu.
+	connsLocked := func() []net.Conn {
+		out := make([]net.Conn, 0, len(clients))
+		for c := range clients {
+			out = append(out, c)
+		}
+		return out
+	}
+	// A full notify that arrives while a refresh is listing or capturing has
+	// already changed the current window. pendingFull reports that, so the
+	// refresh can abandon the stale snapshot and let the worker re-list.
+	// Declared here, before refresh, because the closure reads it; enqueue
+	// below is what sets the flag.
+	var (
+		pendMu     sync.Mutex
+		pendFull   bool
+		pendLayout bool
+	)
+	pendingFull := func() bool {
+		pendMu.Lock()
+		defer pendMu.Unlock()
+		return pendFull
+	}
+	currentGen := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return barGen
+	}
+	// publishActive marks one session's window current from the hook's own
+	// target and pushes that before any list-panes. after-select-window
+	// already names the window it selected; listing here would sit behind a
+	// capture the refresh still has in flight, and the 250ms budget would
+	// expire on the previous window.
+	publishActive := func(target string) bool {
+		sess, win, ok := strings.Cut(target, ":")
+		if !ok || sess == "" || win == "" {
+			return false
+		}
+		mu.Lock()
+		if len(bars) == 0 {
+			mu.Unlock()
+			return false
+		}
+		next := append([]SidebarInfo(nil), bars...)
+		found := false
+		for i := range next {
+			if next[i].Session != sess {
+				continue
+			}
+			next[i].Active = next[i].Window == win
+			if next[i].Active {
+				found = true
+			}
+		}
+		if !found || barsEqual(bars, next) {
+			mu.Unlock()
+			return found
+		}
+		barGen++
+		gen := barGen
+		bars = next
+		prev := append([]detect.Result(nil), state...)
+		conns := connsLocked()
+		mu.Unlock()
+		sendState(conns, prev, next, gen)
+		return true
+	}
+	// publishBars lists panes and pushes sidebar focus immediately. A window
+	// switch has to move the accent within 250ms, and the refresh worker may
+	// be inside capture-pane. The hook path calls this before enqueueing.
+	publishBars := func() {
+		mu.Lock()
+		barGen++
+		gen := barGen
+		mu.Unlock()
+		panes, err := srv.ListPanes()
+		if err != nil {
+			return
+		}
+		infos := sidebarInfos(panes)
+		mu.Lock()
+		if barGen != gen || barsEqual(bars, infos) {
+			mu.Unlock()
+			return
+		}
+		bars = append([]SidebarInfo(nil), infos...)
+		prev := append([]detect.Result(nil), state...)
+		conns := connsLocked()
+		mu.Unlock()
+		sendState(conns, prev, infos, gen)
+	}
+	// refresh reports whether a newer full notify superseded it. The caller
+	// re-runs so the snapshot it publishes was listed after that notify.
+	refresh := func() bool {
+		// One refresh at a time: a notify and the ticker can both fire, and the
+		// layout pass kills panes. Two concurrent passes could each split.
 		refreshMu.Lock()
 		defer refreshMu.Unlock()
+		listedGen := currentGen()
+		reloadOpts()
 		// One list-panes per refresh: the layout pass and detection read the
-		// same snapshot, so a refresh costs one listing plus one capture per
-		// agent pane (not one listing per phase and a capture per pane).
+		// same snapshot. capture-pane runs only for agent panes whose
+		// fingerprint moved (or whose cached classification has gone stale).
 		panes, err := srv.ListPanes()
 		if err != nil {
 			panes = nil
 		}
-		// Keep every sidebar the shape its window's width calls for. Reshape
-		// only: creating panes is the config hooks' job, so a server that never
-		// loaded tmuxrd never grows sidebars. The same pass reaps duplicate
-		// sidebars, so an already-poisoned server heals here.
-		layout.EnsurePanes(srv, panes, layoutOpts, false)
-		res := detect.DetectPanes(srv, panes)
-		now := time.Now()
-		mu.Lock()
-		applyWorkTime(res, now)
-		state = res
-		snap := append([]detect.Result(nil), res...)
-		conns := make([]net.Conn, 0, len(clients))
-		for c := range clients {
-			conns = append(conns, c)
+		if pendingFull() {
+			return true
 		}
-		mu.Unlock()
-		b, _ := json.Marshal(stateMsg{Type: "state", Results: snap})
-		b = append(b, '\n')
-		for _, c := range conns {
-			_, err := c.Write(b)
-			if err != nil {
-				mu.Lock()
-				delete(clients, c)
-				mu.Unlock()
-				c.Close()
+		// Reshape only: creating panes is the config hooks' job, so a server
+		// that never loaded tmuxrd never grows sidebars. The same pass reaps
+		// duplicate sidebars and puts a drifted width or strip height back.
+		replaced := false
+		if enabled {
+			replaced, _ = layout.EnsurePanes(srv, panes, layoutOpts, false)
+		}
+		if pendingFull() {
+			return true
+		}
+		// A shape change replaces the sidebar pane. The list above still names
+		// the pane that was killed; take another so clients learn the new id.
+		// A resize does not, and costs no second listing.
+		if replaced {
+			if again, err := srv.ListPanes(); err == nil {
+				panes = again
+			}
+			if pendingFull() {
+				return true
 			}
 		}
+		// The marker follows these sidebars. Publish them before capture-pane,
+		// unless a notify already owns a newer list. Pairing our older list
+		// with that newer gen lets it arrive last and stick for the rest of
+		// the 250ms hook budget: the client keeps the highest gen it has seen.
+		infos := sidebarInfos(panes)
+		mu.Lock()
+		if barGen != listedGen {
+			mu.Unlock()
+			return true
+		}
+		changed := !barsEqual(bars, infos)
+		if changed {
+			bars = append([]SidebarInfo(nil), infos...)
+		}
+		gen := barGen
+		prev := append([]detect.Result(nil), state...)
+		sbEarly := append([]SidebarInfo(nil), bars...)
+		conns := connsLocked()
+		mu.Unlock()
+		if changed {
+			sendState(conns, prev, sbEarly, gen)
+		}
+		if pendingFull() {
+			return true
+		}
+		now := time.Now()
+		res := detect.DetectPanesCached(srv, panes, screens, now, func() bool {
+			return pendingFull() || currentGen() != listedGen
+		})
+		mu.Lock()
+		if pendingFull() || barGen != listedGen {
+			mu.Unlock()
+			return true
+		}
+		writes := applyWorkTime(res, now)
+		state = res
+		bars = append([]SidebarInfo(nil), infos...)
+		snap := append([]detect.Result(nil), res...)
+		sb := append([]SidebarInfo(nil), bars...)
+		gen = barGen
+		conns = connsLocked()
+		mu.Unlock()
+		applyPins(writes)
+		sendState(conns, snap, sb, gen)
+		return false
+	}
+	// layoutRefresh is the window-layout-changed path: reshape, and do not
+	// capture every agent. A burst of those hooks used to run a full detect.
+	layoutRefresh := func() {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		listedGen := currentGen()
+		reloadOpts()
+		if !enabled {
+			return
+		}
+		panes, err := srv.ListPanes()
+		if err != nil {
+			return
+		}
+		replaced, err := layout.EnsurePanes(srv, panes, layoutOpts, false)
+		if err != nil || !replaced {
+			return
+		}
+		again, err := srv.ListPanes()
+		if err != nil {
+			return
+		}
+		infos := sidebarInfos(again)
+		mu.Lock()
+		// A newer notify owns the marker. Publishing this list would either
+		// carry a stale gen or stamp the newer gen on the older windows.
+		if barGen != listedGen {
+			mu.Unlock()
+			return
+		}
+		bars = append([]SidebarInfo(nil), infos...)
+		gen := barGen
+		snap := append([]detect.Result(nil), state...)
+		sb := append([]SidebarInfo(nil), bars...)
+		conns := connsLocked()
+		mu.Unlock()
+		sendState(conns, snap, sb, gen)
 	}
 
-	// Coalesce notify bursts into (at most) one queued refresh. A burst of tmux
-	// hooks — one `j` can fire pane-focus-in and after-select-pane together, and
-	// a resize fires window-layout-changed for each step — used to start one full
-	// refresh each, each listing and capturing every agent. A capacity-1 channel
-	// with a single worker collapses them: the first notify starts a refresh
-	// immediately (no added latency a user could see), and any that arrive while
-	// it runs leave a single token behind, so at most one more refresh follows.
-	// refreshMu still serialises the worker against the ticker.
-	notify := make(chan struct{}, 1)
+	// Coalesce notify bursts into one queued refresh. A full refresh upgrades
+	// a queued layout-only one: the full pass reshapes too. The worker is the
+	// only caller of refresh besides the synchronous first pass below, so a
+	// hook storm cannot stack captures. pendFull and pendLayout live next to
+	// refresh, which reads them to abandon a stale pass.
+	kick := make(chan struct{}, 1)
+	enqueue := func(full bool) {
+		pendMu.Lock()
+		if full {
+			pendFull = true
+		} else {
+			pendLayout = true
+		}
+		pendMu.Unlock()
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+	}
 	go func() {
-		for range notify {
-			refresh()
+		for range kick {
+			for {
+				pendMu.Lock()
+				full, lay := pendFull, pendLayout
+				pendFull, pendLayout = false, false
+				pendMu.Unlock()
+				if full {
+					// A notify that landed mid-pass superseded the snapshot.
+					// Loop now, rather than waiting for the kick, so the
+					// re-list is not stuck behind the channel.
+					if refresh() {
+						continue
+					}
+					break
+				}
+				if lay {
+					layoutRefresh()
+				}
+				break
+			}
 		}
 	}()
 
@@ -289,14 +600,20 @@ func cmdDaemon() {
 			}
 			mu.Lock()
 			clients[conn] = struct{}{}
-			// send current state
 			snap := append([]detect.Result(nil), state...)
+			sb := append([]SidebarInfo(nil), bars...)
+			gen := barGen
 			mu.Unlock()
-			b, _ := json.Marshal(stateMsg{Type: "state", Results: snap})
-			b = append(b, '\n')
-			conn.Write(b)
-
+			// Read the command before the hello write. A notify process
+			// writes one line and exits; the hello often fails, and it must
+			// not run (or close the conn) before that line is handled.
 			go func(c net.Conn) {
+				defer func() {
+					mu.Lock()
+					delete(clients, c)
+					mu.Unlock()
+					c.Close()
+				}()
 				sc := bufio.NewScanner(c)
 				for sc.Scan() {
 					var m daemonMsg
@@ -305,10 +622,20 @@ func cmdDaemon() {
 					}
 					switch m.Cmd {
 					case "notify":
-						select {
-						case notify <- struct{}{}:
-						default:
+						// A window hook names the window it selected. Mark that
+						// before any list, and do not follow it with a list
+						// that may have been queued on the other side of the
+						// select.
+						if m.What == "window" && publishActive(m.Target) {
+							enqueue(true)
+							break
 						}
+						// Other full notifies (focus, split, kill) still move
+						// the accent. Publish that before the worker's capture.
+						if m.What != "layout" {
+							publishBars()
+						}
+						enqueue(m.What != "layout")
 					case "focus":
 						srv.FocusPane("", m.Pane)
 					case "quit":
@@ -319,11 +646,8 @@ func cmdDaemon() {
 						return
 					}
 				}
-				mu.Lock()
-				delete(clients, c)
-				mu.Unlock()
-				c.Close()
 			}(conn)
+			sendState([]net.Conn{conn}, snap, sb, gen)
 		}
 	}()
 
@@ -350,7 +674,7 @@ func cmdDaemon() {
 					}
 				}
 			}
-			refresh()
+			enqueue(true)
 		case <-sig:
 			return
 		case <-stop:
@@ -367,7 +691,14 @@ func cmdNotify() {
 		return
 	}
 	defer conn.Close()
-	b, _ := json.Marshal(daemonMsg{Cmd: "notify"})
+	what, target := "", ""
+	if len(os.Args) > 2 {
+		what = os.Args[2]
+	}
+	if len(os.Args) > 3 {
+		target = os.Args[3]
+	}
+	b, _ := json.Marshal(daemonMsg{Cmd: "notify", What: what, Target: target})
 	b = append(b, '\n')
 	conn.Write(b)
 }
@@ -441,7 +772,7 @@ func cmdAdapt() {
 		fmt.Fprintln(os.Stderr, "adapt:", err)
 		os.Exit(1)
 	}
-	if err := layout.EnsurePanes(srv, panes, opts, true); err != nil {
+	if _, err := layout.EnsurePanes(srv, panes, opts, true); err != nil {
 		fmt.Fprintln(os.Stderr, "adapt:", err)
 		os.Exit(1)
 	}
@@ -491,7 +822,7 @@ func streamStates(program *tea.Program, done <-chan struct{}) {
 			if err := json.Unmarshal(sc.Bytes(), &sm); err != nil {
 				continue
 			}
-			program.Send(stateUIMsg{Results: sm.Results})
+			program.Send(stateUIMsg{Results: sm.Results, Sidebars: sm.Sidebars, Gen: sm.Gen})
 		}
 		conn.Close()
 		// The daemon closed the connection (a restart, or it exited because its
@@ -524,5 +855,7 @@ func sleepOrDone(d time.Duration, done <-chan struct{}) bool {
 }
 
 type stateUIMsg struct {
-	Results []detect.Result
+	Results  []detect.Result
+	Sidebars []SidebarInfo
+	Gen      int
 }
