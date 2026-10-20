@@ -13,7 +13,7 @@ build:
 fakeagent:
 	$(GO) build -o cmd/fakeagent/fakeagent ./cmd/fakeagent
 
-# Unit tests (there are none by design; kept for the usual target name).
+# Unit tests cover session identity. The tmux behaviour lives in the godog suite.
 test:
 	$(GO) test ./...
 

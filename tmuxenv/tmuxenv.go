@@ -156,12 +156,19 @@ func (e *Env) env(extra ...string) []string {
 	out := make([]string, 0, len(os.Environ())+len(extra)+2)
 	for _, kv := range os.Environ() {
 		switch strings.SplitN(kv, "=", 2)[0] {
-		case "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR":
+		case "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "TMUXRD_STATE_DIR", "GROK_HOME":
+			// Drop an inherited state dir or grok home. The earliest value wins,
+			// and a scenario must not rewrite the operator's ledger.
 			continue
 		}
 		out = append(out, kv)
 	}
-	out = append(out, "PATH="+e.PATH(), "CLICOLOR_FORCE=1")
+	out = append(out,
+		"PATH="+e.PATH(),
+		"CLICOLOR_FORCE=1",
+		"TMUXRD_STATE_DIR="+e.stateDir(),
+		"GROK_HOME="+e.grokHome(),
+	)
 	return append(out, extra...)
 }
 
@@ -400,6 +407,9 @@ func (e *Env) ensureClientEnv() error {
 		// environment; forcing colour here keeps the palette assertions valid
 		// even if the server was seeded some other way.
 		{"CLICOLOR_FORCE", "1"},
+		// run-shell daemons inherit the server global env, not our process env.
+		{"TMUXRD_STATE_DIR", e.stateDir()},
+		{"GROK_HOME", e.grokHome()},
 	} {
 		if _, err := e.Server.Run("set-environment", "-g", kv[0], kv[1]); err != nil {
 			return fmt.Errorf("set-environment %s: %w", kv[0], err)
@@ -421,6 +431,21 @@ func (e *Env) ensureClientEnv() error {
 
 func (e *Env) runtimeDir() string {
 	d := filepath.Join(os.TempDir(), "tmuxrd-rt-"+e.Socket)
+	os.MkdirAll(d, 0o700)
+	return d
+}
+
+// stateDir is where this scenario's daemon writes agents.json.
+func (e *Env) stateDir() string {
+	d := filepath.Join(e.runtimeDir(), "state")
+	os.MkdirAll(d, 0o700)
+	return d
+}
+
+// grokHome stands in for ~/.grok so a scenario never reads the operator's
+// open conversations.
+func (e *Env) grokHome() string {
+	d := filepath.Join(e.runtimeDir(), "grok")
 	os.MkdirAll(d, 0o700)
 	return d
 }

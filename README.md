@@ -31,8 +31,17 @@ agent's window becomes the one a client is viewing, so the checkmark is a notifi
 that finishes in the window you are watching never pins, and one that pins stops pinning when you
 switch to it.
 
-Nothing is installed into the agents. State is inferred from what tmux already exposes (process
-name plus the visible screen), so it works with any agent in any pane.
+The sidebar glyph is inferred from what tmux already exposes (process name plus the visible
+screen), so it works with any agent in any pane. Nothing is installed into an agent for that.
+
+Resuming a conversation after the tmux server dies is a different fact: it needs the agent's own
+session id, which the screen does not show. The daemon writes `~/.local/state/tmuxrd/agents.json`
+(`$XDG_STATE_HOME/tmuxrd/agents.json`) with each agent, its id, its working directory, and the
+tmux session and window it was in. Grok already lists its open tabs in `~/.grok/active_sessions.json`.
+Pi does not publish its id, so the installer copies a small extension into `~/.pi/agent/extensions`
+when `pi` is on `PATH` or `~/.pi/agent` exists. `tmuxrd resume` reads the ledger and starts each
+recorded agent again (`grok --resume <id>`, `pi --session <id>`) in a session of the same name.
+An agent whose process is still running is left alone.
 
 ## Requirements
 

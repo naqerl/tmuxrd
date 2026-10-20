@@ -192,6 +192,7 @@ func cmdDaemon() {
 		barGen int
 	)
 	screens := detect.NewScreenCache()
+	initSessionCache()
 	// Tunables and @tmuxrd_enabled change rarely. Reading them on every 500ms
 	// tick was several tmux processes per refresh; re-read every few seconds.
 	// TrustEnabled tells the layout pass not to read the option again.
@@ -432,6 +433,7 @@ func cmdDaemon() {
 		// same snapshot. capture-pane runs only for agent panes whose
 		// fingerprint moved (or whose cached classification has gone stale).
 		panes, err := srv.ListPanes()
+		listed := err == nil
 		if err != nil {
 			panes = nil
 		}
@@ -503,6 +505,11 @@ func cmdDaemon() {
 		mu.Unlock()
 		applyPins(writes)
 		sendState(conns, snap, sb, gen)
+		// A failed list must not replace the ledger with an empty snapshot.
+		// The write is a local file, and only when the set of agents changed.
+		if listed {
+			observeSessions(srv, panes, snap)
+		}
 		return false
 	}
 	// layoutRefresh is the window-layout-changed path: reshape, and do not

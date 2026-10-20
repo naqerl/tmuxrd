@@ -167,6 +167,10 @@ type Pane struct {
 	// redraw in place without moving any of these; callers must not treat a
 	// match as proof the screen is unchanged forever.
 	ContentFP string
+
+	// Title is #{pane_title}. Grok puts the focused session's title here, which
+	// is how a process with several open tabs is reduced to the one on screen.
+	Title string
 }
 
 const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}\t#{@tmuxrd_finished}\t#{window_active}\t#{session_attached}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{history_bytes}\t#{scroll_position}\t#{alternate_on}\t#{pane_title}"
@@ -211,6 +215,7 @@ func (s Server) ListPanes() ([]Pane, error) {
 			ContentFP: strings.Join([]string{
 				fields[17], fields[18], fields[19], fields[20], fields[21], fields[22], title,
 			}, "\x1e"),
+			Title: title,
 		})
 	}
 	return panes, nil

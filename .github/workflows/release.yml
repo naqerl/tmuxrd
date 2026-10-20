@@ -45,6 +45,8 @@ jobs:
               -o "dist/${pkg}/bin/tmuxrd" ./cmd/tmuxrd
             cp tmuxrd.tmux README.md install.sh "dist/${pkg}/"
             cp scripts/*.sh "dist/${pkg}/scripts/"
+            mkdir -p "dist/${pkg}/extensions"
+            cp -a extensions/. "dist/${pkg}/extensions/"
             tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
             rm -rf "dist/${pkg}"
           done

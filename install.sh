@@ -90,6 +90,42 @@ install_tree() {
   cp "$from/tmuxrd.tmux" "$ROOT/tmuxrd.tmux"
   cp "$from"/scripts/*.sh "$ROOT/scripts/"
   if [ -f "$from/README.md" ]; then cp "$from/README.md" "$ROOT/README.md"; fi
+  if [ -d "$from/extensions" ]; then
+    mkdir -p "$ROOT/extensions"
+    cp -a "$from/extensions/." "$ROOT/extensions/"
+  fi
+}
+
+# pi keeps its conversation id inside the process. When pi is installed, copy
+# the extension that writes the id where the daemon can read it. A machine
+# without pi is left alone. Re-running replaces the file; it is managed.
+pi_agent_dir() {
+  if [ -n "${PI_CODING_AGENT_DIR:-}" ]; then
+    printf '%s\n' "$PI_CODING_AGENT_DIR"
+    return
+  fi
+  printf '%s\n' "$HOME/.pi/agent"
+}
+
+pi_detected() {
+  if have pi; then return 0; fi
+  if [ -d "$(pi_agent_dir)" ]; then return 0; fi
+  return 1
+}
+
+install_pi_extension() {
+  local src="$ROOT/extensions/pi/tmuxrd-session.ts"
+  [ -f "$src" ] || return 0
+  if ! pi_detected; then
+    return 0
+  fi
+  local dest
+  dest="$(pi_agent_dir)/extensions"
+  mkdir -p "$dest"
+  local tmp="$dest/tmuxrd-session.ts.new.$$"
+  cp "$src" "$tmp"
+  mv -f "$tmp" "$dest/tmuxrd-session.ts"
+  log "installed the pi session extension into $dest"
 }
 
 verify_checksum() {
@@ -256,6 +292,7 @@ fi
 chmod +x "$ROOT/bin/tmuxrd" 2>/dev/null || true
 chmod +x "$ROOT"/scripts/*.sh 2>/dev/null || true
 
+install_pi_extension
 wire_conf
 restart_daemon
 
