@@ -13,8 +13,9 @@ tmuxi() {
 # Keep a window named after its agent. tmux renames a window from its *active*
 # pane, so focusing the tmuxrd sidebar pane renames the window to "tmuxrd" and
 # the sidebar then reads "tmuxrd (pi)". Pinning automatic-rename-format to a
-# window option set from the agent pane keeps automatic-rename on (the window
-# still renames when the agent changes) while the sidebar can never drive it.
+# window option set from the agent pane keeps automatic-rename on while the
+# sidebar can never drive it. This runs when the window is created; an agent
+# started later in a shell is pinned by the daemon on its next refresh.
 pin_window_name() {
   _w=$1
   _agent=$(tmuxi list-panes -t "$_w" -F '#{pane_current_command} #{@tmuxrd_sidebar}' 2>/dev/null \

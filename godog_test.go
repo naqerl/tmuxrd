@@ -648,6 +648,19 @@ func InitializeScenario(s *godog.ScenarioContext) {
 			return fmt.Errorf("no active pane in %s:%s", sess, win)
 		})
 	})
+	s.Step(`^the agent name pin on window "([^"]*)" of session "([^"]*)" is cleared$`, func(ctx context.Context, win, sess string) error {
+		target := sess + ":" + win
+		// Drop the pin and force the broken name. Focusing the sidebar is what
+		// renames an unpinned window; the daemon has to put the agent name back.
+		if _, err := cur.env.Server.Run("set-option", "-wu", "-t", target, "@tmuxrd_agent"); err != nil {
+			return err
+		}
+		if _, err := cur.env.Server.Run("set-option", "-wu", "-t", target, "automatic-rename-format"); err != nil {
+			return err
+		}
+		_, err := cur.env.Server.Run("rename-window", "-t", target, "tmuxrd")
+		return err
+	})
 	s.Step(`^window "([^"]*)" of session "([^"]*)" should be named "([^"]*)"$`, func(ctx context.Context, win, sess, want string) error {
 		return eventually(2*time.Second, func() error {
 			out, err := cur.env.Server.Run("list-windows", "-t", sess, "-F",

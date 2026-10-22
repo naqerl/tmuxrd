@@ -141,6 +141,15 @@ func lockAdapt(srv tmux.Server) (*os.File, error) {
 // started.
 const paneFinishedOption = "@tmuxrd_finished"
 
+// windowAgentOption records which agent a window belongs to. tmux names a
+// window from its active pane, so focusing the sidebar (command "tmuxrd")
+// renames an unpinned window to "tmuxrd" and the sidebar then reads
+// "tmuxrd (pi)". The format keeps automatic-rename on: a set option wins,
+// and a window with no agent still follows pane_current_command.
+const windowAgentOption = "@tmuxrd_agent"
+
+const windowRenameFormat = "#{?@tmuxrd_agent,#{@tmuxrd_agent},#{pane_current_command}}"
+
 // unknownGrace is how long a pane may read unread before its working period is
 // really closed. "The screen said nothing" is not "the agent stopped": pi draws
 // its spinner in the editor's top border and the slash-command menu below the
@@ -150,6 +159,73 @@ const paneFinishedOption = "@tmuxrd_finished"
 // the damage when a pane has genuinely gone quiet — a stopped agent whose screen
 // the detector cannot read still shows its ✓ a few seconds later.
 const unknownGrace = 10 * time.Second
+
+// windowNamePlan is one agent window whose name pin is missing or whose name
+// has already become "tmuxrd". Rename is false when the visible name is
+// already the agent and only the option needs writing.
+type windowNamePlan struct {
+	Target string
+	Agent  string
+	Rename bool
+}
+
+// planAgentWindowNames decides which windows to pin. One agent pane owns the
+// window; a later pane in the same window does not override it. A window that
+// is already pinned and not named tmuxrd is left alone, including one the
+// operator renamed by hand.
+func planAgentWindowNames(panes []tmux.Pane, results []detect.Result) []windowNamePlan {
+	byID := make(map[string]tmux.Pane, len(panes))
+	for _, p := range panes {
+		byID[p.ID] = p
+	}
+	seen := map[string]bool{}
+	var out []windowNamePlan
+	for _, r := range results {
+		if r.Agent == "" || r.Session == "" || r.Window == "" {
+			continue
+		}
+		target := r.Session + ":" + r.Window
+		if seen[target] {
+			continue
+		}
+		p, ok := byID[r.PaneID]
+		if !ok {
+			continue
+		}
+		seen[target] = true
+		if p.WindowAgent == r.Agent && p.WindowName != "tmuxrd" {
+			continue
+		}
+		out = append(out, windowNamePlan{
+			Target: target,
+			Agent:  r.Agent,
+			Rename: p.WindowName != r.Agent,
+		})
+	}
+	return out
+}
+
+// stampWindowNames copies a planned rename onto the snapshot so the sidebar
+// does not draw "tmuxrd (pi)" for the rest of this tick.
+func stampWindowNames(res []detect.Result, plans []windowNamePlan) {
+	if len(plans) == 0 {
+		return
+	}
+	name := make(map[string]string, len(plans))
+	for _, p := range plans {
+		if p.Rename {
+			name[p.Target] = p.Agent
+		}
+	}
+	if len(name) == 0 {
+		return
+	}
+	for i := range res {
+		if n, ok := name[res[i].Session+":"+res[i].Window]; ok {
+			res[i].WindowName = n
+		}
+	}
+}
 
 func cmdDaemon() {
 	srv := tmux.NewServerFromEnv()
@@ -305,6 +381,29 @@ func cmdDaemon() {
 			}
 			srv.SetPaneOption(w.id, paneFinishedOption, "1")
 		}
+	}
+	// applyWindowNames pins each agent window once. The create hook only sees
+	// the command at the moment the window appears, which is a shell when the
+	// agent is started afterwards, so the pin is missing and the next sidebar
+	// focus renames the window. Steady state writes nothing.
+	applyWindowNames := func(plans []windowNamePlan) {
+		if len(plans) == 0 {
+			return
+		}
+		args := make([]string, 0, len(plans)*14)
+		for i, p := range plans {
+			if i > 0 {
+				args = append(args, ";")
+			}
+			args = append(args,
+				"set-option", "-w", "-t", p.Target, windowAgentOption, p.Agent, ";",
+				"set-option", "-w", "-t", p.Target, "automatic-rename-format", windowRenameFormat,
+			)
+			if p.Rename {
+				args = append(args, ";", "rename-window", "-t", p.Target, p.Agent)
+			}
+		}
+		srv.Run(args...)
 	}
 	// sendMu keeps snapshot writes ordered. publishBars and refresh write the
 	// same connections from different goroutines; a torn write is a dropped
@@ -496,6 +595,8 @@ func cmdDaemon() {
 			return true
 		}
 		writes := applyWorkTime(res, now)
+		names := planAgentWindowNames(panes, res)
+		stampWindowNames(res, names)
 		state = res
 		bars = append([]SidebarInfo(nil), infos...)
 		snap := append([]detect.Result(nil), res...)
@@ -504,6 +605,7 @@ func cmdDaemon() {
 		conns = connsLocked()
 		mu.Unlock()
 		applyPins(writes)
+		applyWindowNames(names)
 		sendState(conns, snap, sb, gen)
 		// A failed list must not replace the ledger with an empty snapshot.
 		// The write is a local file, and only when the set of agents changed.

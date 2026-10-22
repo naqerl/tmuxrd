@@ -126,12 +126,11 @@ func layoutOverride() string {
 
 // syncMarker marks the agent whose window is currently in view.
 //
-// Keying off the *window* rather than the pane is what makes every sidebar agree
+// Keying off the window rather than the pane is what makes every sidebar agree
 // without shared state: focusing an agent's sidebar still shows that agent
-// marked. A window with no agent (a shell, htop) would otherwise clear the
-// marker, and the next snapshot would wipe a highlight that had moved onto the
-// agent that is actually working. That empty marker picks the working agent
-// instead, and stays there.
+// marked. A window with no agent (a shell, htop) clears the marker. The pane
+// and window hooks already publish that window, so the next snapshot drops
+// the accent instead of parking it on a working agent elsewhere.
 func (m *model) syncMarker() {
 	if i, ok := m.resultIndex(m.navHold); ok && time.Now().Before(m.navHoldTill) {
 		r := m.results[i]
@@ -151,10 +150,6 @@ func (m *model) syncMarker() {
 				return
 			}
 		}
-	}
-	if i := m.runningIndex(); i >= 0 {
-		m.cursor = i
-		return
 	}
 	m.cursor = -1
 }
@@ -180,19 +175,6 @@ func (m model) cursorMatchesView() bool {
 	}
 	r := m.results[m.cursor]
 	return r.Session == m.session && r.Window == win
-}
-
-// runningIndex is the working agent an empty marker should show. Among several,
-// the one that has been working the longest is the run you are waiting on.
-func (m model) runningIndex() int {
-	best, bestWork := -1, time.Duration(-1)
-	for i, r := range m.results {
-		if r.State != detect.Working || r.Worked <= bestWork {
-			continue
-		}
-		best, bestWork = i, r.Worked
-	}
-	return best
 }
 
 func (m model) resultIndex(pane string) (int, bool) {
@@ -229,10 +211,9 @@ func (m *model) navigate(i int, intoAgent bool) tea.Cmd {
 	if i < 0 || i >= len(m.results) {
 		return nil
 	}
-	// Same row and the view is already there: nothing to do. An empty marker
-	// can already be sitting on the running agent while the view is a shell
-	// window; that press still has to move the view, or the next snapshot
-	// looks like a snap back to nowhere.
+	// Same row and the view is already there: nothing to do. The cursor can
+	// already sit on the aimed row while the view is still the previous
+	// window; that press still has to move the view.
 	if !intoAgent && i == m.cursor && m.cursorMatchesView() {
 		return nil
 	}
@@ -280,7 +261,7 @@ func (m *model) step(delta int) tea.Cmd {
 		m.cursor = -1
 		return nil
 	}
-	// The highlight is on the running agent but the view is not. The first
+	// The highlight is aimed at a row the view has not reached yet. The first
 	// step takes you there; the one after that walks the list.
 	if len(m.bars) > 0 && m.cursor >= 0 && !m.cursorMatchesView() {
 		return m.navigate(m.cursor, false)

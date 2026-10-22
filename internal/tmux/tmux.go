@@ -171,9 +171,14 @@ type Pane struct {
 	// Title is #{pane_title}. Grok puts the focused session's title here, which
 	// is how a process with several open tabs is reduced to the one on screen.
 	Title string
+
+	// WindowAgent is the window's @tmuxrd_agent option. Empty means the window
+	// was never pinned, so automatic-rename still follows the active pane and
+	// a focused sidebar renames the window to "tmuxrd".
+	WindowAgent string
 }
 
-const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}\t#{@tmuxrd_finished}\t#{window_active}\t#{session_attached}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{history_bytes}\t#{scroll_position}\t#{alternate_on}\t#{pane_title}"
+const paneFmt = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_width}\t#{pane_height}\t#{window_width}\t#{window_height}\t#{window_zoomed_flag}\t#{@tmuxrd_sidebar}\t#{@tmuxrd_layout}\t#{@tmuxrd_finished}\t#{window_active}\t#{session_attached}\t#{cursor_x}\t#{cursor_y}\t#{history_size}\t#{history_bytes}\t#{scroll_position}\t#{alternate_on}\t#{@tmuxrd_agent}\t#{pane_title}"
 
 // ListPanes enumerates every pane on every window of every session.
 func (s Server) ListPanes() ([]Pane, error) {
@@ -187,14 +192,14 @@ func (s Server) ListPanes() ([]Pane, error) {
 			continue
 		}
 		fields := strings.Split(line, "\t")
-		// 0..22 are fixed columns; pane_title is the rest so a title that
+		// 0..23 are fixed columns; pane_title is the rest so a title that
 		// itself contains a tab does not shift the columns in front of it.
-		if len(fields) < 23 {
+		if len(fields) < 24 {
 			continue
 		}
 		title := ""
-		if len(fields) > 23 {
-			title = strings.Join(fields[23:], "\t")
+		if len(fields) > 24 {
+			title = strings.Join(fields[24:], "\t")
 		}
 		active := strings.TrimSpace(fields[15]) == "1"
 		attached := atoi(fields[16]) > 0
@@ -215,7 +220,8 @@ func (s Server) ListPanes() ([]Pane, error) {
 			ContentFP: strings.Join([]string{
 				fields[17], fields[18], fields[19], fields[20], fields[21], fields[22], title,
 			}, "\x1e"),
-			Title: title,
+			Title:       title,
+			WindowAgent: strings.TrimSpace(fields[23]),
 		})
 	}
 	return panes, nil

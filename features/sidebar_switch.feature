@@ -71,25 +71,29 @@ Feature: Sidebar reflects window focus quickly and stays consistent
     And I wait 1200ms
     Then window "0" of session "s1" should be named "pi"
 
-  Scenario: An empty marker picks the running agent and stays there
-    # A shell window has no agent of its own. Clearing the marker made the
-    # next key start at the wrong row, and the following snapshot wiped it.
-    # The empty marker picks the agent that is working, and j moves the view
-    # there instead of snapping back to nothing.
+  Scenario: A window that lost its name pin is named after its agent again
+    # The create hook pins the name only when the agent is already the pane
+    # command. An agent started later in a shell never gets the pin, and the
+    # next switch focuses the sidebar and renames the window to tmuxrd.
+    Given the sidebar is showing agent rows
+    When the agent name pin on window "0" of session "s1" is cleared
+    And I focus the sidebar pane
+    Then window "0" of session "s1" should be named "pi"
+
+  Scenario: A non-agent window clears the marker while an agent is working
+    # A shell window has no agent of its own. The pane and window hooks
+    # publish that window, and the marker clears instead of staying on a
+    # working agent in some other window.
     Given agent "claude" in session "s1" window "1" is in state "working"
     And the sidebar should show a timer for agent "claude"
     And session "s1" has an extra non-agent window
     When I select window "3"
-    Then the sidebar should select window "1" within 500ms
+    Then the sidebar should show no selection marker
     When I wait 1200ms
-    Then the sidebar should select window "1" within 250ms
-    When I press the "j" key in the sidebar
-    Then window "1" should be the active window of session "s1"
-    And window "1" of session "s1" should have its sidebar pane focused
+    Then the sidebar should show no selection marker
 
   Scenario: A non-agent window shows no marker when nothing is working
-    # With no working agent there is nothing to fall back to, so a shell
-    # window shows no marker.
+    # A shell window has no agent, so it shows no marker.
     Given the sidebar is showing agent rows
     And session "s1" has an extra non-agent window
     When I select window "3"
